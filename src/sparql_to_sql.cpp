@@ -23,6 +23,9 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
 #include <r2rml/R2RMLMapping.h>
+#include <r2rml/SQLResultSet.h>
+#include <r2rml/SQLRow.h>
+#include <r2rml/SQLValue.h>
 #include <sparql-parser/ParseError.h>
 #include <sparql-parser/Parser.h>
 #include <sparql-parser/ast/Query.h>
