@@ -171,7 +171,8 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	CreateScalarFunctionInfo info(sparql_to_sql_sf);
 	FunctionDescription desc;
 	desc.description =
-	    "Translate a SPARQL SELECT or ASK query into an equivalent SQL query, using an R2RML or YARRRML mapping "
+	    "Translate a SPARQL SELECT, ASK or CONSTRUCT query into an equivalent SQL query, using an R2RML or YARRRML "
+	    "mapping "
 	    "file(s) "
 	    "in reverse. The mapping must be a full R2RML mapping (every TriplesMap has an rr:logicalTable or YARRRML "
 	    "'sources' entry) - inside-out-only mappings are not accepted. Throws a detailed error naming the mapping "

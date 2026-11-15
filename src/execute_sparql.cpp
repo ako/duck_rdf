@@ -56,7 +56,8 @@ void RegisterExecuteSparql(ExtensionLoader &loader) {
 	CreateTableFunctionInfo info(tf);
 	FunctionDescription desc;
 	desc.description =
-	    "Translate a SPARQL SELECT or ASK query into SQL via an R2RML or YARRRML mapping (like sparql_to_sql), then "
+	    "Translate a SPARQL SELECT, ASK or CONSTRUCT query into SQL via an R2RML or YARRRML mapping (like "
+	    "sparql_to_sql), then "
 	    "run it directly as a table. Unlike calling sparql_to_sql() and pasting the result into a second query, "
 	    "execute_sparql() splices the translated SQL into this query's own plan before optimization, so filters, "
 	    "projections, and joins written around the call are planned together with it. Same mapping requirements "
