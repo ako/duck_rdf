@@ -41,7 +41,14 @@ static unique_ptr<TableRef> ExecuteSparqlBindReplace(ClientContext &context, Tab
 	if (typed != input.named_parameters.end() && !typed->second.IsNull()) {
 		result_types = BooleanValue::Get(typed->second) ? SparqlResultTypes::NATIVE : SparqlResultTypes::VARCHAR;
 	}
-	std::string sql = TranslateSparqlToSql(&context, sparql_text, mapping_path, result_types);
+	auto ontology_param = input.named_parameters.find("ontology");
+	std::string ontology;
+	const std::string *ontology_override = nullptr;
+	if (ontology_param != input.named_parameters.end() && !ontology_param->second.IsNull()) {
+		ontology = ontology_param->second.ToString();
+		ontology_override = &ontology;
+	}
+	std::string sql = TranslateSparqlToSql(&context, sparql_text, mapping_path, result_types, ontology_override);
 
 	Parser parser(context);
 	parser.ParseQuery(sql);
@@ -58,7 +65,9 @@ void RegisterExecuteSparql(ExtensionLoader &loader) {
 	TableFunction tf("execute_sparql", {LogicalType::VARCHAR, LogicalType::VARCHAR}, nullptr, nullptr);
 	tf.bind_replace = ExecuteSparqlBindReplace;
 	// NULL (the default) means: follow the sparql_typed_results setting.
-	tf.GetSignature().AddKeywordOnly("typed", LogicalType::BOOLEAN, Value(LogicalType::BOOLEAN));
+	tf.GetSignature()
+	    .AddKeywordOnly("typed", LogicalType::BOOLEAN, Value(LogicalType::BOOLEAN))
+	    .AddKeywordOnly("ontology", LogicalType::VARCHAR, Value(LogicalType::VARCHAR));
 
 	CreateTableFunctionInfo info(tf);
 	FunctionDescription desc;

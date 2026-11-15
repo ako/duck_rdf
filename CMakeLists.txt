@@ -84,9 +84,10 @@ set(SQL2RDF_GIT_REPOSITORY
 # fixed-point xsd:decimal aggregate fixes, its vocabulary check and
 # runtime-typed SUM over mixed candidate arms, and native comparisons for
 # constant IRIs and numeric FILTERs (pushdown into Postgres/Parquet scans), and
-# CONSTRUCT queries, and typed results.
+# CONSTRUCT queries, typed results, and RDFS-style reasoning by mapping
+# saturation.
 set(SQL2RDF_GIT_TAG
-    "b4a05fa5344e5e17390375b0fe359417beb1b15e"
+    "3b06ad6cef616cf3ee396d50adf81548200177f7"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf

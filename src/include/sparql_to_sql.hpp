@@ -16,6 +16,9 @@ void RegisterSparqlToSql(ExtensionLoader &loader);
 // all three raise identical errors. context may be null (as when called from
 // the parser extension, which has no ClientContext) - the mapping-existence
 // pre-check and the best-effort type catalog are simply skipped in that case.
+//! `ontology_override`, when given, replaces the sparql_ontology setting for
+//! this call: a path or glob of RDF files whose class and property hierarchies
+//! the query is answered under (an empty string means no ontology).
 //! Whether SELECT output columns are returned as native SQL values (typed
 //! results) or as the VARCHAR lexical form of each RDF term.
 enum class SparqlResultTypes : uint8_t {
@@ -26,6 +29,7 @@ enum class SparqlResultTypes : uint8_t {
 
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
                                  const std::string &mapping_path,
-                                 SparqlResultTypes result_types = SparqlResultTypes::FROM_SETTING);
+                                 SparqlResultTypes result_types = SparqlResultTypes::FROM_SETTING,
+                                 const std::string *ontology_override = nullptr);
 
 } // namespace duckdb
