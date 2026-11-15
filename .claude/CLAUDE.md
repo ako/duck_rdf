@@ -168,7 +168,7 @@ State (whether enabled, and which mapping path) lives in a `SparqlParserState` s
 
 ## Key Dependencies
 
-Git submodules (branch `v1.5-variegata`, i.e. the DuckDB v1.5 line — see `docs/UPDATING.md` for the version-bump procedure, work on DuckDB v2 - a breaking change - is on the Duck2 branch that will be merged to main after the upstream release):
+Git submodules (branch `v2.0-cyanoptera`; `duckdb/` is pinned to the `v2.0.0` release tag — see `docs/UPDATING.md` for the version-bump procedure). Build with `OVERRIDE_GIT_DESCRIBE=v2.0.0` when the submodule is a shallow checkout without tags, or the extension is stamped with a bare commit hash and stock DuckDB 2.0.0 refuses to load it:
 - `duckdb/` — DuckDB source the extension builds against
 - `extension-ci-tools/` — shared DuckDB extension build framework (owns the real Makefile logic)
 
