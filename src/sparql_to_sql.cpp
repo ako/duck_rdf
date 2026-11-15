@@ -89,6 +89,19 @@ static bool ShouldCheckVocabulary(ClientContext *context) {
 	return StringUtil::Lower(setting.ToString()) != "ignore";
 }
 
+static constexpr const char *TYPED_RESULTS_SETTING = "sparql_typed_results";
+
+static bool UseTypedResults(ClientContext *context, SparqlResultTypes result_types) {
+	if (result_types != SparqlResultTypes::FROM_SETTING) {
+		return result_types == SparqlResultTypes::NATIVE;
+	}
+	Value setting;
+	if (!context || !context->TryGetCurrentSetting(TYPED_RESULTS_SETTING, setting) || setting.IsNull()) {
+		return false;
+	}
+	return BooleanValue::Get(setting.DefaultCastAs(LogicalType::BOOLEAN));
+}
+
 static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, Value &parameter) {
 	auto value = StringUtil::Lower(parameter.ToString());
 	if (value != "error" && value != "ignore") {
@@ -99,7 +112,7 @@ static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, 
 }
 
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
-                                 const std::string &mapping_path) {
+                                 const std::string &mapping_path, SparqlResultTypes result_types) {
 	if (ResolveMappingFiles(mapping_path).empty()) {
 		throw IOException("Mapping file not found: " + mapping_path);
 	}
@@ -145,7 +158,9 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 	try {
 		sparql2sql::DuckDbDialect dialect;
 		auto catalog = context ? BuildTypeCatalog(*context, &mapping) : nullptr;
-		sql = sparql2sql::translateQuery(*query, mapping, dialect, catalog.get());
+		sparql2sql::TranslateOptions options;
+		options.typedResults = UseTypedResults(context, result_types);
+		sql = sparql2sql::translateQuery(*query, mapping, dialect, catalog.get(), options);
 	} catch (const std::exception &e) {
 		throw InvalidInputException("SPARQL-to-SQL translation error: %s", e.what());
 	}
@@ -190,6 +205,12 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    "mapping produces: 'error' (default) raises an error naming the term, with a suggestion when it looks like "
 	    "a typo; 'ignore' translates it to a pattern that matches nothing.",
 	    LogicalType::VARCHAR, Value("error"), ValidateUnknownTermsSetting);
+	config.AddExtensionOption(
+	    TYPED_RESULTS_SETTING,
+	    "When true, sparql_to_sql/execute_sparql return each SELECT column whose datatype the mapping settles as a "
+	    "native value (BIGINT, DECIMAL, DOUBLE, BOOLEAN, DATE, TIMESTAMP, or the source column's own type) instead of "
+	    "VARCHAR. IRIs, strings and per-row datatypes stay VARCHAR. execute_sparql's typed parameter overrides it.",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
 }
 
 } // namespace duckdb

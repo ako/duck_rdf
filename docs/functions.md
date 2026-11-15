@@ -462,10 +462,36 @@ Like `sparql_to_sql`, `execute_sparql` has no libcurl/libxml2 dependency and is 
 |-----------|------|-------------|
 | `sparql` | VARCHAR | The SPARQL query text |
 | `mapping` | VARCHAR | Path or glob pattern matching one or more R2RML or YARRRML mapping files — see [Multiple/glob mapping files](#multiple-mapping-files-and-globs) above. |
+| `typed` | BOOLEAN (named, optional) | Return SELECT columns as native values; see [Typed results](#typed-results). Overrides the `sparql_typed_results` setting for this call. |
 
 **Returns**
 
 A table whose schema is whatever the translated SQL produces: one column per SPARQL SELECT variable (named `v_<variable>`), holding the VARCHAR lexical form of each bound RDF term — the same shape you'd get from running `sparql_to_sql`'s output SQL yourself.
+
+<a id="typed-results"></a>**Typed results.** By default every SELECT column is VARCHAR. With `typed := true`, or `SET sparql_typed_results = true` (which also applies to `sparql_to_sql`), each column whose datatype the mapping settles is returned as a native value:
+
+| Datatype | Column type |
+|---|---|
+| `xsd:integer` (and narrower integer types) | `BIGINT` |
+| `xsd:decimal` | `DECIMAL(38,10)` |
+| `xsd:double`, `xsd:float` | `DOUBLE` |
+| `xsd:boolean` | `BOOLEAN` |
+| `xsd:date` / `xsd:dateTime` | `DATE` / `TIMESTAMP` |
+
+- When the column is a direct copy of a table column of a matching type, that column's own type is used instead, so an `INTEGER` column stays `INTEGER` and a `DECIMAL(10,2)` keeps its scale.
+- IRIs, blank nodes, strings (including language-tagged ones) and any column whose type varies per row stay VARCHAR.
+- Aggregates are typed by their result, so `COUNT` and an integer `SUM` are `BIGINT`.
+- A value that does not fit its declared datatype becomes NULL.
+- `ASK` and `CONSTRUCT` results are unchanged.
+- Raw SPARQL statements (`enable_sparql_parser`) always return VARCHAR, because the parser extension has no access to settings.
+
+```sql
+SELECT v_name, v_salary * 1.05 AS raised
+FROM execute_sparql('PREFIX ex: <http://example.com/ns#>
+                     SELECT ?name ?salary WHERE { ?p ex:name ?name ; ex:salary ?salary }',
+                    'mapping.ttl', typed := true)
+ORDER BY v_salary DESC;
+```
 
 For a `CONSTRUCT` query: one row per constructed triple, in the same columns as `read_rdf` without `graph`: `subject`, `predicate`, `object`, `object_datatype`, `object_lang` (all VARCHAR). The rows are distinct, because an RDF graph is a set.
 
