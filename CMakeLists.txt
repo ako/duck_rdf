@@ -80,9 +80,10 @@ set(SQL2RDF_GIT_REPOSITORY
     "https://github.com/ako/sql2rdf.git"
     CACHE STRING "Git repository to fetch sql2rdf from")
 # Pinned by commit: the fork does not carry upstream's tags. This commit is
-# upstream nonodename/sql2rdf v2.3.0.
+# upstream nonodename/sql2rdf v2.3.0 plus the fork's YARRRML `type:` and
+# fixed-point xsd:decimal aggregate fixes and its vocabulary check.
 set(SQL2RDF_GIT_TAG
-    "7985c8603a5579282f977be165bb41a91b3dc298"
+    "4c5860c47d4c8b470d7b00a5b93f90eb5754eb27"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf

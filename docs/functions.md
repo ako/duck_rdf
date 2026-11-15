@@ -429,7 +429,10 @@ On failure, `sparql_to_sql` raises an error whose message identifies which stage
 | `R2RML/YARRRML mapping parse error: ...` | The mapping file is not syntactically valid |
 | `Mapping '...' is not a valid full R2RML mapping...` | The mapping parses but lacks `rr:logicalTable`/`sources` declarations |
 | `SPARQL parse error: ...` | The SPARQL query text has a syntax error (includes line/column/near-text detail) |
+| `SPARQL vocabulary error: ...` | The query names a class or property that no map in the mapping produces, so that pattern could never match. The message names each such term and, when one looks like a typo, the closest term the mapping does produce (`property <…#nmae> (did you mean <…#name>?)`). See the `sparql_unknown_terms` setting below |
 | `SPARQL-to-SQL translation error: ...` | The query is syntactically valid SPARQL but uses a construct the translator can't express as SQL against this mapping (e.g. `CONSTRUCT`, `SERVICE`, an unsupported `FILTER` builtin) |
+
+**Setting `sparql_unknown_terms`** (`'error'` by default). A query that names a class or property no map produces would otherwise just return no rows, which looks the same as "no data". With `'error'`, `sparql_to_sql` and `execute_sparql` raise the vocabulary error above; `SET sparql_unknown_terms = 'ignore'` restores the empty result, for example for a query shared with another endpoint that has more data. The check covers constant properties (also inside property paths) and the classes in `a` / `rdf:type` patterns, anywhere in the query including OPTIONAL, UNION, MINUS, GRAPH, EXISTS and subqueries. A mapping with a generic triple map, whose predicate comes from a column (for example an ontology loaded with `read_rdf` and mapped as rows), can produce any term, so such queries are never rejected. Raw SPARQL run through `enable_sparql_parser` always uses `'error'`, since that path has no session settings.
 
 **Example**
 

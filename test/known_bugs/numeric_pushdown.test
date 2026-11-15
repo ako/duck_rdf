@@ -17,6 +17,6 @@ CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, am
 
 # Numeric FILTER: expect a comparison on the column, without a text round trip
 query T
-SELECT regexp_matches(sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:salary ?s FILTER(?s > 50000) }', 'test/known_bugs/hr_only.ttl'), '"salary"\s*>\s*50000');
+SELECT regexp_matches(sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:salary ?s FILTER(?s > 50000) }', 'test/regression/hr_only.ttl'), '"salary"\s*>\s*50000');
 ----
 true

@@ -1,0 +1,78 @@
+# name: test/sql/sparql_vocabulary.test
+# description: A SPARQL query naming a class or property that no map produces is an
+#   error (with a "did you mean" suggestion) instead of silently returning zero rows.
+#   SET sparql_unknown_terms = 'ignore' restores the empty result. Mappings with a
+#   generic triple map (predicate from a column) are never rejected.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Known terms translate as before
+query T
+SELECT v_n FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?n WHERE { ?p a ex:Employee ; ex:name ?n }', 'test/regression/hr_only.ttl');
+----
+Ann
+
+# Misspelled property, with a suggestion
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:nmae ?n }', 'test/regression/hr_only.ttl');
+----
+property <http://example.com/ns#nmae> (did you mean <http://example.com/ns#name>?)
+
+# Misspelled class, with a suggestion
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p a ex:Employe }', 'test/regression/hr_only.ttl');
+----
+class <http://example.com/ns#Employe> (did you mean <http://example.com/ns#Employee>?)
+
+# Also inside OPTIONAL, and through sparql_to_sql
+statement error
+SELECT sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:name ?n OPTIONAL { ?p ex:salry ?s } }', 'test/regression/hr_only.ttl');
+----
+did you mean <http://example.com/ns#salary>?
+
+# 'ignore' gives the previous behaviour: a pattern that matches nothing
+statement ok
+SET sparql_unknown_terms = 'ignore';
+
+query TT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:nmae ?n }', 'test/regression/hr_only.ttl');
+----
+
+statement ok
+RESET sparql_unknown_terms;
+
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:nmae ?n }', 'test/regression/hr_only.ttl');
+----
+SPARQL vocabulary error
+
+# Only 'error' and 'ignore' are accepted
+statement error
+SET sparql_unknown_terms = 'warn';
+----
+must be 'error' or 'ignore'
+
+# A generic triple map (the ontology mapped as rows) makes the vocabulary open
+statement ok
+CREATE TABLE onto AS SELECT * FROM read_rdf('test/regression/ontology.ttl', prefix_expansion = true);
+
+statement ok
+CREATE VIEW onto_iri AS SELECT subject, predicate, object FROM onto WHERE object LIKE 'http%';
+
+statement ok
+CREATE VIEW onto_lit AS SELECT subject, predicate, object FROM onto WHERE object NOT LIKE 'http%';
+
+query T
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:anythingAtAll ?x }', 'test/regression/hr_mapping.ttl');
+----
+0

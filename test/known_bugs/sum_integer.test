@@ -29,7 +29,7 @@ CREATE VIEW onto_lit AS SELECT subject, predicate, object FROM onto WHERE object
 
 # Control (passes today): only typed maps can produce ex:salary
 query T
-SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?s) AS ?total) WHERE { ?p ex:salary ?s }', 'test/known_bugs/hr_only.ttl');
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?s) AS ?total) WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl');
 ----
 231000
 
