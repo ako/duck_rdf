@@ -1,11 +1,9 @@
-# name: test/known_bugs/sum_integer.test
-# description: KNOWN BUG - integer SUM falls back to floating point.
-#   With a mapping where every ex:salary is an xsd:integer column, SUM stays
-#   integral. As soon as the mapping also has a generic triple map whose
-#   predicate comes from a column (here: the ontology loaded with read_rdf),
-#   ex:salary *might* come from that untyped map and SUM returns "231000.0",
-#   even when ?p is restricted to ex:Employee. AnzoGraph returns "231000".
-# group: [known_bugs]
+# name: test/sql/sum_integer.test
+# description: Integer SUM stays integral when the mapping also has a generic
+#   triple map whose predicate comes from a column (here: the ontology loaded
+#   with read_rdf). That map makes ex:salary's type unknown at translation
+#   time, so SUM picks its result type from the rows. AnzoGraph returns "231000".
+# group: [sql]
 
 require rdf
 

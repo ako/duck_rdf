@@ -81,9 +81,10 @@ set(SQL2RDF_GIT_REPOSITORY
     CACHE STRING "Git repository to fetch sql2rdf from")
 # Pinned by commit: the fork does not carry upstream's tags. This commit is
 # upstream nonodename/sql2rdf v2.3.0 plus the fork's YARRRML `type:` and
-# fixed-point xsd:decimal aggregate fixes and its vocabulary check.
+# fixed-point xsd:decimal aggregate fixes, its vocabulary check and
+# runtime-typed SUM over mixed candidate arms.
 set(SQL2RDF_GIT_TAG
-    "4c5860c47d4c8b470d7b00a5b93f90eb5754eb27"
+    "c1b152c6c8de039950a60b14b62245cb6a76b017"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf
