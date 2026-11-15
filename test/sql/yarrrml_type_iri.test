@@ -1,9 +1,9 @@
-# name: test/known_bugs/yarrrml_type_iri.test
-# description: KNOWN BUG - the YARRRML long form `o: {value: $(col), type: iri}` is
+# name: test/sql/yarrrml_type_iri.test
+# description: REGRESSION (fixed in sql2rdf f688cd9) - the YARRRML long form `o: {value: $(col), type: iri}` is
 #   ignored when the value is a plain column reference: the object becomes a
 #   string literal, so a join on it silently returns no rows. The short form
 #   `$(col)~iri` and R2RML `rr:termType rr:IRI` work.
-# group: [known_bugs]
+# group: [sql]
 
 require rdf
 
@@ -14,6 +14,6 @@ statement ok
 CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
 
 query TT
-SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:worksFor ?c . ?c ex:name ?n }', 'test/known_bugs/link_column.yml');
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:worksFor ?c . ?c ex:name ?n }', 'test/regression/link_column.yml');
 ----
 http://data.example.com/person/10	Acme
