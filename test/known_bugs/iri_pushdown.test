@@ -18,6 +18,6 @@ CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, am
 
 # Constant IRI: expect a plain key comparison on the integer column
 query T
-SELECT regexp_matches(sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:worksFor <http://data.example.com/company/1> }', 'test/known_bugs/hr_only.ttl'), '"company_id"\s*=\s*1\b');
+SELECT regexp_matches(sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:worksFor <http://data.example.com/company/1> }', 'test/regression/hr_only.ttl'), '"company_id"\s*=\s*1\b');
 ----
 true
