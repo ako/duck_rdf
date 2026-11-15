@@ -36,7 +36,12 @@ static unique_ptr<TableRef> ExecuteSparqlBindReplace(ClientContext &context, Tab
 	auto sparql_text = input.inputs[0].GetValue<string>();
 	auto mapping_path = input.inputs[1].GetValue<string>();
 
-	std::string sql = TranslateSparqlToSql(&context, sparql_text, mapping_path);
+	auto result_types = SparqlResultTypes::FROM_SETTING;
+	auto typed = input.named_parameters.find("typed");
+	if (typed != input.named_parameters.end() && !typed->second.IsNull()) {
+		result_types = BooleanValue::Get(typed->second) ? SparqlResultTypes::NATIVE : SparqlResultTypes::VARCHAR;
+	}
+	std::string sql = TranslateSparqlToSql(&context, sparql_text, mapping_path, result_types);
 
 	Parser parser(context);
 	parser.ParseQuery(sql);
@@ -52,6 +57,8 @@ static unique_ptr<TableRef> ExecuteSparqlBindReplace(ClientContext &context, Tab
 void RegisterExecuteSparql(ExtensionLoader &loader) {
 	TableFunction tf("execute_sparql", {LogicalType::VARCHAR, LogicalType::VARCHAR}, nullptr, nullptr);
 	tf.bind_replace = ExecuteSparqlBindReplace;
+	// NULL (the default) means: follow the sparql_typed_results setting.
+	tf.GetSignature().AddKeywordOnly("typed", LogicalType::BOOLEAN, Value(LogicalType::BOOLEAN));
 
 	CreateTableFunctionInfo info(tf);
 	FunctionDescription desc;

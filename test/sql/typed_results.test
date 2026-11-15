@@ -1,0 +1,82 @@
+# name: test/sql/typed_results.test
+# description: Typed results. With execute_sparql(..., typed := true) or
+#   SET sparql_typed_results = true, a SELECT column whose datatype the mapping
+#   settles comes back as a native value instead of VARCHAR. IRIs and strings
+#   stay VARCHAR. Off by default.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', 1, 61000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2)), (2, 0.20::DECIMAL(10,2))) t(id, amount);
+
+# Default: every column is VARCHAR
+query TT
+SELECT typeof(v_p), typeof(v_s) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?s WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl') LIMIT 1;
+----
+VARCHAR	VARCHAR
+
+# typed := true: the salary keeps its column's own type, the IRI stays VARCHAR
+query TTT
+SELECT typeof(v_p), typeof(v_s), typeof(v_n) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?s ?n WHERE { ?p ex:salary ?s ; ex:name ?n }', 'test/regression/hr_only.ttl', typed := true) LIMIT 1;
+----
+VARCHAR	INTEGER	VARCHAR
+
+# Native values sort and compute as numbers
+query TI
+SELECT v_n, v_s + 1 FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?n ?s WHERE { ?p ex:salary ?s ; ex:name ?n }', 'test/regression/hr_only.ttl', typed := true) ORDER BY v_s DESC;
+----
+Bob	61001
+Ann	52001
+
+# A DECIMAL(10,2) column keeps its scale, and so its exact sum
+query TR
+SELECT typeof(v_a), sum(v_a) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?a WHERE { ?x ex:amount ?a }', 'test/regression/hr_only.ttl', typed := true) GROUP BY ALL;
+----
+DECIMAL(10,2)	0.30
+
+# Aggregates are typed by their result: integral SUM and COUNT are BIGINT
+query TTII
+SELECT typeof(v_total), typeof(v_n), v_total, v_n FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?s) AS ?total) (COUNT(?p) AS ?n) WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl', typed := true);
+----
+BIGINT	BIGINT	113000	2
+
+# The setting turns it on for sparql_to_sql and execute_sparql alike
+statement ok
+SET sparql_typed_results = true;
+
+query T
+SELECT typeof(v_s) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?s WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl') LIMIT 1;
+----
+INTEGER
+
+query I
+SELECT sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?s WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl') LIKE '%REPLACE (TRY_CAST(%';
+----
+true
+
+# typed := false overrides the setting for one call
+query T
+SELECT typeof(v_s) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?s WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl', typed := false) LIMIT 1;
+----
+VARCHAR
+
+# CONSTRUCT keeps its triple columns
+query T
+SELECT typeof(object) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?p ex:earns ?s } WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl') LIMIT 1;
+----
+VARCHAR
+
+statement ok
+RESET sparql_typed_results;
+
+query T
+SELECT typeof(v_s) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?s WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl') LIMIT 1;
+----
+VARCHAR

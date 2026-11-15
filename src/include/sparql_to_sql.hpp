@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace duckdb {
@@ -15,7 +16,16 @@ void RegisterSparqlToSql(ExtensionLoader &loader);
 // all three raise identical errors. context may be null (as when called from
 // the parser extension, which has no ClientContext) - the mapping-existence
 // pre-check and the best-effort type catalog are simply skipped in that case.
+//! Whether SELECT output columns are returned as native SQL values (typed
+//! results) or as the VARCHAR lexical form of each RDF term.
+enum class SparqlResultTypes : uint8_t {
+	FROM_SETTING, //!< the sparql_typed_results setting (VARCHAR when there is no ClientContext)
+	VARCHAR,
+	NATIVE
+};
+
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
-                                 const std::string &mapping_path);
+                                 const std::string &mapping_path,
+                                 SparqlResultTypes result_types = SparqlResultTypes::FROM_SETTING);
 
 } // namespace duckdb
