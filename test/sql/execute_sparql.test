@@ -108,10 +108,10 @@ SELECT * FROM execute_sparql('SELECT ?e WHERE { ?e ?p ?o', 'test/r2rml/full_r2rm
 ----
 SPARQL parse error
 
-# unsupported query form: CONSTRUCT
+# unsupported query form: DESCRIBE (CONSTRUCT is covered by construct.test)
 statement error
 SELECT * FROM execute_sparql(
-    'PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?e ex:name ?name } WHERE { ?e ex:name ?name }',
+    'PREFIX ex: <http://example.com/ns#> DESCRIBE ?e WHERE { ?e ex:name ?name }',
     'test/r2rml/full_r2rml_lower.ttl'
 );
 ----
