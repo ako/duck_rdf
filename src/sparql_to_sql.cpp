@@ -162,7 +162,7 @@ static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, 
 
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
                                  const std::string &mapping_path, SparqlResultTypes result_types,
-                                 const std::string *ontology_override) {
+                                 const std::string *ontology_override, bool term_tags) {
 	if (ResolveMappingFiles(mapping_path).empty()) {
 		throw IOException("Mapping file not found: " + mapping_path);
 	}
@@ -218,6 +218,7 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 		auto catalog = context ? BuildTypeCatalog(*context, &mapping) : nullptr;
 		sparql2sql::TranslateOptions options;
 		options.typedResults = UseTypedResults(context, result_types);
+		options.termTags = term_tags;
 		sql = sparql2sql::translateQuery(*query, mapping, dialect, catalog.get(), options);
 	} catch (const std::exception &e) {
 		throw InvalidInputException("SPARQL-to-SQL translation error: %s", e.what());
