@@ -11,8 +11,15 @@ if [ ! -x "$UNITTEST" ]; then
   exit 2
 fi
 
+shopt -s nullglob
+tests=(test/known_bugs/*.test)
+if [ ${#tests[@]} -eq 0 ]; then
+  echo "no known-bug tests in test/known_bugs"
+  exit 0
+fi
+
 fixed=0
-for test in test/known_bugs/*.test; do
+for test in "${tests[@]}"; do
   if "$UNITTEST" --test-dir . "$test" > /dev/null 2>&1; then
     echo "FIXED          $test  -> move it to test/sql/"
     fixed=1

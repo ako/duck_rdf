@@ -1,0 +1,36 @@
+# name: test/sql/iri_pushdown.test
+# description: A constant IRI in a pattern compares the integer key column
+#   directly (company_id = 1) instead of CAST(company_id AS VARCHAR) = '1', so
+#   DuckDB can push it into a Postgres scan or use Parquet/Iceberg min-max
+#   statistics (measured: 582 ms vs 6 ms on Postgres, 88 MB vs 8.8 MB read on
+#   Iceberg).
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Constant IRI: expect a plain key comparison on the integer column
+query T
+SELECT regexp_matches(sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:worksFor <http://data.example.com/company/1> }', 'test/regression/hr_only.ttl'), '"company_id"\s*=\s*1\b');
+----
+true
+
+# Same answer as before
+query T
+SELECT v_p FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:worksFor <http://data.example.com/company/1> }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/person/10
+
+# A key that no integer renders as can never match
+query I
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:worksFor <http://data.example.com/company/01> }', 'test/regression/hr_only.ttl');
+----
+0
