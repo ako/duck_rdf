@@ -1,8 +1,8 @@
-# name: test/known_bugs/sum_decimal.test
-# description: KNOWN BUG - SUM over a DECIMAL column mapped as xsd:decimal is
+# name: test/sql/sum_decimal.test
+# description: REGRESSION (fixed in sql2rdf f688cd9) - SUM over a DECIMAL column mapped as xsd:decimal is
 #   computed in floating point: 0.10 + 0.20 returns "0.30000000000000004".
 #   Found on Postgres numeric(10,2) money totals.
-# group: [known_bugs]
+# group: [sql]
 
 require rdf
 
@@ -24,8 +24,8 @@ CREATE VIEW onto_iri AS SELECT subject, predicate, object FROM onto WHERE object
 statement ok
 CREATE VIEW onto_lit AS SELECT subject, predicate, object FROM onto WHERE object NOT LIKE 'http%';
 
-# Decimal sum is exact (canonical "0.3" or SQL-style "0.30" both accepted)
+# Decimal sum is exact and rendered in canonical form
 query T
-SELECT v_total IN ('0.3', '0.30') FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?a) AS ?total) WHERE { ?p ex:amount ?a }', 'test/known_bugs/hr_only.ttl');
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?a) AS ?total) WHERE { ?p ex:amount ?a }', 'test/regression/hr_only.ttl');
 ----
-true
+0.3

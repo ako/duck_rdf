@@ -18,10 +18,10 @@ CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, am
 
 # Misspelled property ex:nmae
 statement error
-SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:nmae ?n }', 'test/known_bugs/hr_only.ttl');
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:nmae ?n }', 'test/regression/hr_only.ttl');
 ----
 
 # Misspelled class ex:Employe
 statement error
-SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p a ex:Employe }', 'test/known_bugs/hr_only.ttl');
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p a ex:Employe }', 'test/regression/hr_only.ttl');
 ----
