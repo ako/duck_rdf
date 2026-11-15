@@ -1,0 +1,97 @@
+# name: test/sql/sparql_reasoning.test
+# description: Reasoning over the ontology's class and property hierarchies.
+#   With an ontology (execute_sparql's ontology parameter, or the
+#   sparql_ontology setting), a query for a class or property also matches its
+#   subclasses and subproperties, each resource once.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', 1, 61000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Without an ontology, ex:Party is a class no map produces
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl');
+----
+SPARQL vocabulary error
+
+# Employee ⊑ Person ⊑ Party and Company ⊑ Party
+query T rowsort
+SELECT v_x FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl');
+----
+http://data.example.com/company/1
+http://data.example.com/person/10
+http://data.example.com/person/11
+
+query T rowsort
+SELECT v_x FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Person }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl');
+----
+http://data.example.com/person/10
+http://data.example.com/person/11
+
+# Every type of one resource, asserted and inferred
+query T rowsort
+SELECT v_t FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?t WHERE { <http://data.example.com/person/10> a ?t }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl');
+----
+http://example.com/ns#Employee
+http://example.com/ns#Party
+http://example.com/ns#Person
+
+# A glob of ontology files: a subproperty and an equivalent class too
+query TT rowsort
+SELECT v_p, v_c FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?c WHERE { ?p ex:compensation ?c }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology*.ttl');
+----
+http://data.example.com/person/10	52000
+http://data.example.com/person/11	61000
+
+query T
+SELECT v_x FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Organisation }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology*.ttl');
+----
+http://data.example.com/company/1
+
+# Inferred terms work in aggregates and CONSTRUCT like asserted ones
+query I
+SELECT v_n FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (COUNT(?x) AS ?n) WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl');
+----
+3
+
+query I
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?x a ex:Party } WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl');
+----
+3
+
+# The setting applies to execute_sparql and sparql_to_sql
+statement ok
+SET sparql_ontology = 'test/regression/ontology.ttl';
+
+query I
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl');
+----
+3
+
+query I
+SELECT sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl') LIKE '%"company"%';
+----
+true
+
+# ontology := '' turns it off for one call
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl', ontology := '');
+----
+SPARQL vocabulary error
+
+statement ok
+RESET sparql_ontology;
+
+# A missing ontology file is an error naming it
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl', ontology := 'test/regression/no_such_ontology.ttl');
+----
+no file matches 'test/regression/no_such_ontology.ttl'

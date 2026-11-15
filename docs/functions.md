@@ -462,11 +462,28 @@ Like `sparql_to_sql`, `execute_sparql` has no libcurl/libxml2 dependency and is 
 |-----------|------|-------------|
 | `sparql` | VARCHAR | The SPARQL query text |
 | `mapping` | VARCHAR | Path or glob pattern matching one or more R2RML or YARRRML mapping files — see [Multiple/glob mapping files](#multiple-mapping-files-and-globs) above. |
+| `ontology` | VARCHAR (named, optional) | Path or glob of RDF files to reason with; see [Reasoning](#reasoning). Overrides the `sparql_ontology` setting for this call; `''` turns it off. |
 | `typed` | BOOLEAN (named, optional) | Return SELECT columns as native values; see [Typed results](#typed-results). Overrides the `sparql_typed_results` setting for this call. |
 
 **Returns**
 
 A table whose schema is whatever the translated SQL produces: one column per SPARQL SELECT variable (named `v_<variable>`), holding the VARCHAR lexical form of each bound RDF term — the same shape you'd get from running `sparql_to_sql`'s output SQL yourself.
+
+<a id="reasoning"></a>**Reasoning.** With an ontology, given as `ontology := 'onto.ttl'` or `SET sparql_ontology = 'onto.ttl'` (which also applies to `sparql_to_sql`), queries are answered under the ontology's class and property hierarchies. A query for `ex:Party` then also returns every `ex:Person` and `ex:Company`, and each resource appears once even when several subclasses apply.
+
+- **Ontology file:** any RDF file `read_rdf` accepts (Turtle, N-Triples, RDF/XML, …), a glob, or a compressed file.
+- **Axioms used:** `rdfs:subClassOf`, `rdfs:subPropertyOf`, `owl:equivalentClass` and `owl:equivalentProperty` between named classes and properties, followed through chains. Other triples and OWL restrictions are ignored.
+- **How:** the mapping is expanded before translation, so every map producing a class or property also produces its superclasses and superproperties. The vocabulary check therefore accepts inferred terms, and the generated SQL is an ordinary union over the tables involved. There is no reasoner at query time.
+- **Not supported:**
+  - `rdfs:domain`/`rdfs:range`, inverse and transitive properties, and OWL class expressions.
+  - Facts from a generic triple map (predicate or class taken from a column).
+  - Raw SPARQL statements (`enable_sparql_parser`), which have no connection to read the ontology with.
+
+```sql
+SELECT v_x FROM execute_sparql(
+    'PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }',
+    'mapping.ttl', ontology := 'ontology.ttl');
+```
 
 <a id="typed-results"></a>**Typed results.** By default every SELECT column is VARCHAR. With `typed := true`, or `SET sparql_typed_results = true` (which also applies to `sparql_to_sql`), each column whose datatype the mapping settles is returned as a native value:
 

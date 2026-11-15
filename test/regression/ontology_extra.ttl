@@ -1,0 +1,8 @@
+@prefix ex:   <http://example.com/ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+
+# Extra axioms for test/sql/sparql_reasoning.test: a property hierarchy and an
+# equivalent class, next to the class hierarchy in ontology.ttl.
+ex:salary rdfs:subPropertyOf ex:compensation .
+ex:Company owl:equivalentClass ex:Organisation .

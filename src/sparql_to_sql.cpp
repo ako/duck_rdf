@@ -2,7 +2,9 @@
 #include "include/r2rml_copy.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/common/enums/vector_type.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/type_util.hpp"
@@ -20,12 +22,17 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
 #include <r2rml/R2RMLMapping.h>
+#include <r2rml/SQLResultSet.h>
+#include <r2rml/SQLRow.h>
+#include <r2rml/SQLValue.h>
 #include <sparql-parser/ParseError.h>
 #include <sparql-parser/Parser.h>
 #include <sparql-parser/ast/Query.h>
 #include <sparql2sql/DuckDbDialect.h>
+#include <sparql2sql/Ontology.h>
 #include <sparql2sql/Translator.h>
 #include <sparql2sql/TypeCatalog.h>
 #include <sparql2sql/VocabularyCheck.h>
@@ -102,6 +109,48 @@ static bool UseTypedResults(ClientContext *context, SparqlResultTypes result_typ
 	return BooleanValue::Get(setting.DefaultCastAs(LogicalType::BOOLEAN));
 }
 
+static constexpr const char *ONTOLOGY_SETTING = "sparql_ontology";
+
+static std::string OntologyPath(ClientContext *context, const std::string *ontology_override) {
+	if (ontology_override) {
+		return *ontology_override;
+	}
+	Value setting;
+	if (!context || !context->TryGetCurrentSetting(ONTOLOGY_SETTING, setting) || setting.IsNull()) {
+		return std::string();
+	}
+	return setting.ToString();
+}
+
+// Read the class and property hierarchy axioms of an ontology file (any RDF
+// format read_rdf accepts, a glob, compressed or not) through the calling
+// connection, and expand the mapping with them.
+static void ApplyOntology(ClientContext &context, const std::string &path, r2rml::R2RMLMapping &mapping) {
+	const std::string sql =
+	    "SELECT subject AS s, predicate AS p, object AS o FROM read_rdf(" + KeywordHelper::WriteQuoted(path, '\'') +
+	    ", prefix_expansion = true) WHERE predicate IN ("
+	    "'http://www.w3.org/2000/01/rdf-schema#subClassOf', 'http://www.w3.org/2000/01/rdf-schema#subPropertyOf', "
+	    "'http://www.w3.org/2002/07/owl#equivalentClass', 'http://www.w3.org/2002/07/owl#equivalentProperty') "
+	    "AND object_datatype IS NULL AND object_lang IS NULL AND contains(object, ':')";
+	if (FileSystem::GetFileSystem(context).Glob(path).empty()) {
+		throw InvalidInputException("SPARQL ontology error: no file matches '%s'", path);
+	}
+	sparql2sql::Ontology ontology;
+	try {
+		ClientContextSQLConnection conn(context, /*ignore_case=*/false);
+		auto rows = conn.execute(sql);
+		while (rows->next()) {
+			const auto &row = rows->getCurrentRow();
+			ontology.addTriple(row.getValue("s")->asString(), row.getValue("p")->asString(),
+			                   row.getValue("o")->asString());
+		}
+	} catch (const std::exception &e) {
+		// The nested query reports DuckDB's error as JSON; keep only its message.
+		throw InvalidInputException("SPARQL ontology error: could not read '%s': %s", path, ErrorData(e).RawMessage());
+	}
+	sparql2sql::saturateMapping(mapping, ontology);
+}
+
 static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, Value &parameter) {
 	auto value = StringUtil::Lower(parameter.ToString());
 	if (value != "error" && value != "ignore") {
@@ -112,7 +161,8 @@ static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, 
 }
 
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
-                                 const std::string &mapping_path, SparqlResultTypes result_types) {
+                                 const std::string &mapping_path, SparqlResultTypes result_types,
+                                 const std::string *ontology_override) {
 	if (ResolveMappingFiles(mapping_path).empty()) {
 		throw IOException("Mapping file not found: " + mapping_path);
 	}
@@ -132,6 +182,14 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 		    "YARRRML 'sources') naming the table/view to query. An inside-out-only mapping (one that "
 		    "can_call_inside_out() accepts but is_valid_r2rml() rejects) is not sufficient here.",
 		    mapping_path.c_str());
+	}
+
+	const std::string ontology_path = OntologyPath(context, ontology_override);
+	if (!ontology_path.empty()) {
+		if (!context) {
+			throw InvalidInputException("SPARQL ontology error: an ontology needs a database connection to read it");
+		}
+		ApplyOntology(*context, ontology_path, mapping);
 	}
 
 	std::unique_ptr<sparql::ast::Query> query;
@@ -211,6 +269,13 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    "native value (BIGINT, DECIMAL, DOUBLE, BOOLEAN, DATE, TIMESTAMP, or the source column's own type) instead of "
 	    "VARCHAR. IRIs, strings and per-row datatypes stay VARCHAR. execute_sparql's typed parameter overrides it.",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
+	config.AddExtensionOption(
+	    ONTOLOGY_SETTING,
+	    "Path or glob of RDF files (any format read_rdf accepts) whose rdfs:subClassOf, rdfs:subPropertyOf, "
+	    "owl:equivalentClass and owl:equivalentProperty axioms sparql_to_sql/execute_sparql answer queries under: a "
+	    "query for a class or property also matches its subclasses and subproperties. Empty (the default) means no "
+	    "ontology. execute_sparql's ontology parameter overrides it.",
+	    LogicalType::VARCHAR, Value(""));
 }
 
 } // namespace duckdb
