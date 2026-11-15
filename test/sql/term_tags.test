@@ -1,0 +1,46 @@
+# name: test/sql/term_tags.test
+# description: Term tags. execute_sparql(..., term_tags := true) adds a d_<var>
+#   column beside each SELECT column: I (IRI), B (blank node), D<datatype>,
+#   @<lang>, L (plain literal), NULL when unbound.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', NULL, 61000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# IRIs, typed literals, and an unbound OPTIONAL variable
+query TTTTTTTT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n ?s ?c WHERE { ?p ex:name ?n ; ex:salary ?s OPTIONAL { ?p ex:worksFor ?c } } ORDER BY ?n', 'test/regression/hr_only.ttl', term_tags := true);
+----
+http://data.example.com/person/10	I	Ann	Dhttp://www.w3.org/2001/XMLSchema#string	52000	Dhttp://www.w3.org/2001/XMLSchema#integer	http://data.example.com/company/1	I
+http://data.example.com/person/11	I	Bob	Dhttp://www.w3.org/2001/XMLSchema#string	61000	Dhttp://www.w3.org/2001/XMLSchema#integer	NULL	NULL
+
+# Computed SELECT items: an aggregate and a string function
+query TTTT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (COUNT(?p) AS ?k) (CONCAT("a", "b") AS ?z) WHERE { ?p ex:name ?n }', 'test/regression/hr_only.ttl', term_tags := true);
+----
+3	Dhttp://www.w3.org/2001/XMLSchema#integer	ab	Dhttp://www.w3.org/2001/XMLSchema#string
+
+# Combines with typed results
+query TT
+SELECT typeof(v_s), d_s FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?s WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl', typed := true, term_tags := true) LIMIT 1;
+----
+INTEGER	Dhttp://www.w3.org/2001/XMLSchema#integer
+
+# Off by default; no effect on ASK
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:name ?n }', 'test/regression/hr_only.ttl'));
+----
+1
+
+query T
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> ASK { ?p ex:name "Ann" }', 'test/regression/hr_only.ttl', term_tags := true);
+----
+true

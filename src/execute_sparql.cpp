@@ -48,7 +48,11 @@ static unique_ptr<TableRef> ExecuteSparqlBindReplace(ClientContext &context, Tab
 		ontology = ontology_param->second.ToString();
 		ontology_override = &ontology;
 	}
-	std::string sql = TranslateSparqlToSql(&context, sparql_text, mapping_path, result_types, ontology_override);
+	auto tags_param = input.named_parameters.find("term_tags");
+	const bool term_tags = tags_param != input.named_parameters.end() && !tags_param->second.IsNull() &&
+	                       BooleanValue::Get(tags_param->second);
+	std::string sql =
+	    TranslateSparqlToSql(&context, sparql_text, mapping_path, result_types, ontology_override, term_tags);
 
 	Parser parser(context);
 	parser.ParseQuery(sql);
@@ -67,7 +71,8 @@ void RegisterExecuteSparql(ExtensionLoader &loader) {
 	// NULL (the default) means: follow the sparql_typed_results setting.
 	tf.GetSignature()
 	    .AddKeywordOnly("typed", LogicalType::BOOLEAN, Value(LogicalType::BOOLEAN))
-	    .AddKeywordOnly("ontology", LogicalType::VARCHAR, Value(LogicalType::VARCHAR));
+	    .AddKeywordOnly("ontology", LogicalType::VARCHAR, Value(LogicalType::VARCHAR))
+	    .AddKeywordOnly("term_tags", LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	CreateTableFunctionInfo info(tf);
 	FunctionDescription desc;

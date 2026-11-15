@@ -464,6 +464,7 @@ Like `sparql_to_sql`, `execute_sparql` has no libcurl/libxml2 dependency and is 
 | `mapping` | VARCHAR | Path or glob pattern matching one or more R2RML or YARRRML mapping files — see [Multiple/glob mapping files](#multiple-mapping-files-and-globs) above. |
 | `ontology` | VARCHAR (named, optional) | Path or glob of RDF files to reason with; see [Reasoning](#reasoning). Overrides the `sparql_ontology` setting for this call; `''` turns it off. |
 | `typed` | BOOLEAN (named, optional) | Return SELECT columns as native values; see [Typed results](#typed-results). Overrides the `sparql_typed_results` setting for this call. |
+| `term_tags` | BOOLEAN (named, default `false`) | Add a `d_<variable>` column beside each SELECT column with the term's kind, datatype or language; see [Term tags](#term-tags). |
 
 **Returns**
 
@@ -483,6 +484,25 @@ A table whose schema is whatever the translated SQL produces: one column per SPA
 SELECT v_x FROM execute_sparql(
     'PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }',
     'mapping.ttl', ontology := 'ontology.ttl');
+```
+
+<a id="term-tags"></a>**Term tags.** A SELECT column holds only the lexical form, so an IRI and a string with the same text look alike. With `term_tags := true`, each column `v_<variable>` is followed by `d_<variable>` (VARCHAR):
+
+| `d_` value | Term |
+|---|---|
+| `I` | IRI |
+| `B` | blank node |
+| `D<datatype IRI>` | typed literal, for example `Dhttp://www.w3.org/2001/XMLSchema#integer` |
+| `@<lang>` | language-tagged literal, for example `@en` |
+| `L` | literal whose datatype the mapping does not say (a plain literal) |
+| NULL | unbound; also a computed SELECT expression whose kind cannot be inferred, which you can read as a plain literal |
+
+This is what a SPARQL results writer (JSON, XML) needs; the DuckGraphLake server's SPARQL endpoint uses it. It has no effect on ASK and CONSTRUCT, and combines with `typed`.
+
+```sql
+SELECT v_s, d_s, v_n, d_n FROM execute_sparql(
+    'SELECT ?s ?n WHERE { ?s <http://example.com/ns#name> ?n }', 'mapping.ttl', term_tags := true);
+-- http://data.example.com/person/10 | I | Ann | L
 ```
 
 <a id="typed-results"></a>**Typed results.** By default every SELECT column is VARCHAR. With `typed := true`, or `SET sparql_typed_results = true` (which also applies to `sparql_to_sql`), each column whose datatype the mapping settles is returned as a native value:

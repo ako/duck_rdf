@@ -85,9 +85,9 @@ set(SQL2RDF_GIT_REPOSITORY
 # runtime-typed SUM over mixed candidate arms, and native comparisons for
 # constant IRIs and numeric FILTERs (pushdown into Postgres/Parquet scans), and
 # CONSTRUCT queries, typed results, and RDFS-style reasoning by mapping
-# saturation.
+# saturation, and result term tags.
 set(SQL2RDF_GIT_TAG
-    "3b06ad6cef616cf3ee396d50adf81548200177f7"
+    "5d7e5a764c744cf427dd915955eaecca62e5a4f3"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf
