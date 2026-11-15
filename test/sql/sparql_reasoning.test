@@ -94,4 +94,4 @@ RESET sparql_ontology;
 statement error
 SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }', 'test/regression/hr_only.ttl', ontology := 'test/regression/no_such_ontology.ttl');
 ----
-could not read 'test/regression/no_such_ontology.ttl'
+no file matches 'test/regression/no_such_ontology.ttl'

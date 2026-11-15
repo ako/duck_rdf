@@ -2,7 +2,9 @@
 #include "include/r2rml_copy.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/common/enums/vector_type.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/common/type_util.hpp"
@@ -130,6 +132,9 @@ static void ApplyOntology(ClientContext &context, const std::string &path, r2rml
 	    "'http://www.w3.org/2000/01/rdf-schema#subClassOf', 'http://www.w3.org/2000/01/rdf-schema#subPropertyOf', "
 	    "'http://www.w3.org/2002/07/owl#equivalentClass', 'http://www.w3.org/2002/07/owl#equivalentProperty') "
 	    "AND object_datatype IS NULL AND object_lang IS NULL AND contains(object, ':')";
+	if (FileSystem::GetFileSystem(context).Glob(path).empty()) {
+		throw InvalidInputException("SPARQL ontology error: no file matches '%s'", path);
+	}
 	sparql2sql::Ontology ontology;
 	try {
 		ClientContextSQLConnection conn(context, /*ignore_case=*/false);
@@ -140,7 +145,8 @@ static void ApplyOntology(ClientContext &context, const std::string &path, r2rml
 			                   row.getValue("o")->asString());
 		}
 	} catch (const std::exception &e) {
-		throw InvalidInputException("SPARQL ontology error: could not read '%s': %s", path, e.what());
+		// The nested query reports DuckDB's error as JSON; keep only its message.
+		throw InvalidInputException("SPARQL ontology error: could not read '%s': %s", path, ErrorData(e).RawMessage());
 	}
 	sparql2sql::saturateMapping(mapping, ontology);
 }
