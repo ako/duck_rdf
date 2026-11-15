@@ -1,0 +1,17 @@
+@prefix rr:  <http://www.w3.org/ns/r2rml#> .
+@prefix ex:  <http://example.com/ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<#Emp> rr:logicalTable [ rr:tableName "emp" ] ;
+  rr:subjectMap [ rr:template "http://data.example.com/person/{id}" ; rr:class ex:Employee ] ;
+  rr:predicateObjectMap [ rr:predicate ex:name ; rr:objectMap [ rr:column "name" ] ] ;
+  rr:predicateObjectMap [ rr:predicate ex:salary ; rr:objectMap [ rr:column "salary" ; rr:datatype xsd:integer ] ] ;
+  rr:predicateObjectMap [ rr:predicate ex:worksFor ; rr:objectMap [ rr:template "http://data.example.com/company/{company_id}" ] ] .
+
+<#Company> rr:logicalTable [ rr:tableName "company" ] ;
+  rr:subjectMap [ rr:template "http://data.example.com/company/{id}" ; rr:class ex:Company ] ;
+  rr:predicateObjectMap [ rr:predicate ex:name ; rr:objectMap [ rr:column "name" ] ] .
+
+<#Payment> rr:logicalTable [ rr:tableName "payment" ] ;
+  rr:subjectMap [ rr:template "http://data.example.com/payment/{id}" ; rr:class ex:Payment ] ;
+  rr:predicateObjectMap [ rr:predicate ex:amount ; rr:objectMap [ rr:column "amount" ; rr:datatype xsd:decimal ] ] .

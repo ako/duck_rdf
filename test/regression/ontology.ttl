@@ -1,0 +1,13 @@
+@prefix ex:   <http://example.com/ns#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+ex:Party    a owl:Class ; rdfs:label "Party" .
+ex:Person   a owl:Class ; rdfs:subClassOf ex:Party ; rdfs:label "Person" .
+ex:Company  a owl:Class ; rdfs:subClassOf ex:Party ; rdfs:label "Company" .
+ex:Employee a owl:Class ; rdfs:subClassOf ex:Person ; rdfs:label "Employee" .
+
+ex:name     a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:range xsd:string ; rdfs:label "name" .
+ex:salary   a owl:DatatypeProperty ; rdfs:domain ex:Employee ; rdfs:range xsd:integer ; rdfs:label "salary" .
+ex:worksFor a owl:ObjectProperty ; rdfs:domain ex:Employee ; rdfs:range ex:Company ; rdfs:label "works for" .

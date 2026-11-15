@@ -69,10 +69,25 @@ target_include_directories(${SERD_NAME} PRIVATE ${serd_SOURCE_DIR}/include)
 # This FetchContent needs to be after serd is defined as a target, because
 # sql2rdf CMakeLists will skip creating its own serd target if one already
 # exists. The target name MUST be `serd` for that to work
+#
+# Where sql2rdf comes from. Override on the command line, e.g. through the
+# extension Makefile's EXT_FLAGS:
+#   EXT_FLAGS="-DSQL2RDF_GIT_TAG=my-branch" make release
+# For local development against a checkout (no fetch, edits picked up on the
+# next build), use CMake's built-in FetchContent override:
+#   EXT_FLAGS="-DFETCHCONTENT_SOURCE_DIR_SQL2RDF=/path/to/sql2rdf" make release
+set(SQL2RDF_GIT_REPOSITORY
+    "https://github.com/ako/sql2rdf.git"
+    CACHE STRING "Git repository to fetch sql2rdf from")
+# Pinned by commit: the fork does not carry upstream's tags. This commit is
+# upstream nonodename/sql2rdf v2.3.0.
+set(SQL2RDF_GIT_TAG
+    "7985c8603a5579282f977be165bb41a91b3dc298"
+    CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf
-  GIT_REPOSITORY https://github.com/nonodename/sql2rdf.git
-  GIT_TAG v2.3.0)
+  GIT_REPOSITORY ${SQL2RDF_GIT_REPOSITORY}
+  GIT_TAG ${SQL2RDF_GIT_TAG})
 
 FetchContent_MakeAvailable(sql2rdf)
 
