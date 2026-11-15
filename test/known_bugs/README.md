@@ -16,5 +16,4 @@ the bug, so the fix stays covered.
 
 | File | Problem |
 |---|---|
-| `iri_pushdown.test` | A constant IRI is compared as text (`CAST(col AS VARCHAR) = '1'`), so it cannot be pushed into Postgres or Parquet/Iceberg scans |
-| `numeric_pushdown.test` | A numeric `FILTER` goes through text and `DOUBLE`, so it cannot be pushed down either |
+| _(none at the moment)_ | |

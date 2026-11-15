@@ -1,0 +1,38 @@
+# name: test/sql/numeric_pushdown.test
+# description: A numeric FILTER on a typed column compares the column directly
+#   (salary > 50000) instead of TRY_CAST(CAST(salary AS VARCHAR) AS DOUBLE), so
+#   DuckDB can push it into Postgres or Parquet/Iceberg scans.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Numeric FILTER: expect a comparison on the column, without a text round trip
+query T
+SELECT regexp_matches(sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:salary ?s FILTER(?s > 50000) }', 'test/regression/hr_only.ttl'), '"salary"\s*>\s*50000');
+----
+true
+
+# Same answers as before
+query T
+SELECT v_p FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:salary ?s FILTER(?s > 50000) }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/person/10
+
+query I
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:salary ?s FILTER(?s > 60000) }', 'test/regression/hr_only.ttl');
+----
+0
+
+query T
+SELECT v_p FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p WHERE { ?p ex:amount ?a FILTER(?a = 0.1) }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/payment/1
