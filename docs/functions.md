@@ -405,7 +405,7 @@ Scalar function. Translates a SPARQL `SELECT` or `ASK` query into an equivalent 
 **Requirements**
 
 - The mapping must be a **full R2RML mapping**: every `TriplesMap` needs an `rr:logicalTable` (or, for YARRRML, a `sources` entry) naming the table or view to query. This is the same requirement `is_valid_r2rml()` checks (i.e. `is_valid_r2rml(mapping) = true`). An inside-out-only mapping — one with no `rr:logicalTable`, as used by `COPY ... FORMAT r2rml` inside-out mode and accepted by `can_call_inside_out()` — is **not** sufficient here, since there is no live SQL connection for `sparql_to_sql` to bounce rows through.
-- Only the `SELECT` and `ASK` SPARQL query forms are supported. `CONSTRUCT` and `DESCRIBE` raise an error naming the unsupported form.
+- The `SELECT`, `ASK` and `CONSTRUCT` query forms are supported (including the short form `CONSTRUCT WHERE { ... }`). `DESCRIBE` raises an error naming the unsupported form.
 - `SERVICE` and a handful of `FILTER` builtins are not yet supported and raise a detailed error describing the unsupported construct.
 - **Named graphs (`GRAPH`, `FROM`, `FROM NAMED`) are supported**, reading a mapping's `rr:graph`/`rr:graphMap` "in reverse": `GRAPH <iri>` prunes candidates whose graph map cannot produce that IRI, and `GRAPH ?g` binds `?g` like any other query variable. A triple whose graph set has more than one member (subject map graph unioned with its predicate-object map's own graph, per R2RML §12) yields one solution per graph under `GRAPH ?g`. `FROM`/`FROM NAMED` restrict the queryable dataset per SPARQL 1.1 §13.2.
   - ⚠️ **Strict RDF-dataset semantics.** With no `FROM`/`FROM NAMED` clause, the default graph (i.e. a query with no `GRAPH` block) contains only triples whose graph set is empty or names `rr:defaultGraph` — a triple that only carries a named graph is invisible outside a `GRAPH`/`FROM` clause. This is a behaviour change for any mapping using `rr:graph`/`rr:graphMap`: prior to sql2rdf v2.2.0, `GRAPH` unconditionally raised an error, so there was no way to observe this rule. Mappings that never use `rr:graph`/`rr:graphMap` generate byte-identical SQL and are unaffected.
@@ -430,7 +430,7 @@ On failure, `sparql_to_sql` raises an error whose message identifies which stage
 | `Mapping '...' is not a valid full R2RML mapping...` | The mapping parses but lacks `rr:logicalTable`/`sources` declarations |
 | `SPARQL parse error: ...` | The SPARQL query text has a syntax error (includes line/column/near-text detail) |
 | `SPARQL vocabulary error: ...` | The query names a class or property that no map in the mapping produces, so that pattern could never match. The message names each such term and, when one looks like a typo, the closest term the mapping does produce (`property <…#nmae> (did you mean <…#name>?)`). See the `sparql_unknown_terms` setting below |
-| `SPARQL-to-SQL translation error: ...` | The query is syntactically valid SPARQL but uses a construct the translator can't express as SQL against this mapping (e.g. `CONSTRUCT`, `SERVICE`, an unsupported `FILTER` builtin) |
+| `SPARQL-to-SQL translation error: ...` | The query is syntactically valid SPARQL but uses a construct the translator can't express as SQL against this mapping (e.g. `DESCRIBE`, `SERVICE`, an unsupported `FILTER` builtin) |
 
 **Setting `sparql_unknown_terms`** (`'error'` by default). A query that names a class or property no map produces would otherwise just return no rows, which looks the same as "no data". With `'error'`, `sparql_to_sql` and `execute_sparql` raise the vocabulary error above; `SET sparql_unknown_terms = 'ignore'` restores the empty result, for example for a query shared with another endpoint that has more data. The check covers constant properties (also inside property paths) and the classes in `a` / `rdf:type` patterns, anywhere in the query including OPTIONAL, UNION, MINUS, GRAPH, EXISTS and subqueries. A mapping with a generic triple map, whose predicate comes from a column (for example an ontology loaded with `read_rdf` and mapped as rows), can produce any term, so such queries are never rejected. Raw SPARQL run through `enable_sparql_parser` always uses `'error'`, since that path has no session settings.
 
@@ -467,12 +467,21 @@ Like `sparql_to_sql`, `execute_sparql` has no libcurl/libxml2 dependency and is 
 
 A table whose schema is whatever the translated SQL produces: one column per SPARQL SELECT variable (named `v_<variable>`), holding the VARCHAR lexical form of each bound RDF term — the same shape you'd get from running `sparql_to_sql`'s output SQL yourself.
 
+For a `CONSTRUCT` query: one row per constructed triple, in the same columns as `read_rdf` without `graph`: `subject`, `predicate`, `object`, `object_datatype`, `object_lang` (all VARCHAR). The rows are distinct, because an RDF graph is a set.
+
+- An IRI is its plain text, with `object_datatype` and `object_lang` NULL.
+- A blank node is `_:label`. A blank node written in the template is fresh for each solution (`_:label_<n>`) and shared by that solution's triples.
+- A literal always has a datatype: its declared one, `rdf:langString` when it has a language tag, or `xsd:string` when the mapping leaves the datatype open.
+- A template triple is left out for a solution where one of its variables is unbound, where its subject would be a literal, or where its predicate would not be an IRI (SPARQL 1.1 §16.2).
+- `ORDER BY`, `LIMIT` and `OFFSET` apply to the solutions, before the template is filled in.
+- Only the WHERE clause is checked against the mapping's vocabulary, so the template may use new classes and properties.
+
 **Requirements**
 
 Identical to `sparql_to_sql` (they share the same translation code):
 
 - The mapping must be a **full R2RML mapping**: every `TriplesMap` needs an `rr:logicalTable` (or, for YARRRML, a `sources` entry) naming the table or view to query — the same requirement `is_valid_r2rml()` checks. An inside-out-only mapping is **not** sufficient here.
-- Only the `SELECT` and `ASK` SPARQL query forms are supported. `CONSTRUCT` and `DESCRIBE` raise an error naming the unsupported form.
+- The `SELECT`, `ASK` and `CONSTRUCT` query forms are supported (including the short form `CONSTRUCT WHERE { ... }`). `DESCRIBE` raises an error naming the unsupported form.
 - `SERVICE` and a handful of `FILTER` builtins are not yet supported and raise a detailed error describing the unsupported construct.
 - Named graphs (`GRAPH`, `FROM`, `FROM NAMED`) are supported — see `sparql_to_sql`'s requirements above, including the strict RDF-dataset semantics note.
 
@@ -492,6 +501,19 @@ SELECT * FROM execute_sparql(
 SELECT t.v_name
 FROM execute_sparql('SELECT ?e ?name WHERE { ?e <http://example.com/ns#name> ?name }', 'mapping.ttl') AS t
 WHERE t.v_e = 'http://data.example.com/employee/7369';
+```
+
+`CONSTRUCT` returns triples, for example to reshape data into another vocabulary and save it as a table:
+
+```sql
+CREATE TABLE people AS
+SELECT * FROM execute_sparql('
+    PREFIX ex: <http://example.com/ns#>
+    PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+    CONSTRUCT { ?e a foaf:Person ; foaf:name ?name ; foaf:member ?dept . }
+    WHERE { ?e a ex:Employee ; ex:name ?name OPTIONAL { ?e ex:department ?dept } }',
+    'mapping.ttl');
+-- subject | predicate | object | object_datatype | object_lang
 ```
 
 ---

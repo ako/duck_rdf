@@ -83,9 +83,10 @@ set(SQL2RDF_GIT_REPOSITORY
 # upstream nonodename/sql2rdf v2.3.0 plus the fork's YARRRML `type:` and
 # fixed-point xsd:decimal aggregate fixes, its vocabulary check and
 # runtime-typed SUM over mixed candidate arms, and native comparisons for
-# constant IRIs and numeric FILTERs (pushdown into Postgres/Parquet scans).
+# constant IRIs and numeric FILTERs (pushdown into Postgres/Parquet scans), and
+# CONSTRUCT queries.
 set(SQL2RDF_GIT_TAG
-    "792881024e754da6149ad9469748de275e365971"
+    "7aa1039a657f6b1a0e97c6187d31d9c814f4ae6d"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf

@@ -1,0 +1,106 @@
+# name: test/sql/construct.test
+# description: SPARQL CONSTRUCT through execute_sparql, sparql_to_sql and the raw
+#   SPARQL parser. Rows are triples in read_rdf's columns (without graph).
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', NULL, 61000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Reshape into another vocabulary. Bob has no company, so only his
+# foaf:member triple is left out. salary keeps its xsd:integer datatype, a
+# name with no declared datatype is a plain literal (xsd:string), and an IRI
+# object has no datatype.
+query TTTTT rowsort
+SELECT * FROM execute_sparql('
+  PREFIX ex: <http://example.com/ns#>
+  PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+  CONSTRUCT { ?p a foaf:Person ; foaf:name ?n ; ex:pay ?s ; foaf:member ?c . }
+  WHERE { ?p a ex:Employee ; ex:name ?n ; ex:salary ?s OPTIONAL { ?p ex:worksFor ?c } }',
+  'test/regression/hr_only.ttl');
+----
+http://data.example.com/person/10	http://example.com/ns#pay	52000	http://www.w3.org/2001/XMLSchema#integer	NULL
+http://data.example.com/person/10	http://www.w3.org/1999/02/22-rdf-syntax-ns#type	http://xmlns.com/foaf/0.1/Person	NULL	NULL
+http://data.example.com/person/10	http://xmlns.com/foaf/0.1/member	http://data.example.com/company/1	NULL	NULL
+http://data.example.com/person/10	http://xmlns.com/foaf/0.1/name	Ann	http://www.w3.org/2001/XMLSchema#string	NULL
+http://data.example.com/person/11	http://example.com/ns#pay	61000	http://www.w3.org/2001/XMLSchema#integer	NULL
+http://data.example.com/person/11	http://www.w3.org/1999/02/22-rdf-syntax-ns#type	http://xmlns.com/foaf/0.1/Person	NULL	NULL
+http://data.example.com/person/11	http://xmlns.com/foaf/0.1/name	Bob	http://www.w3.org/2001/XMLSchema#string	NULL
+
+# Short form, with a language-tagged constant in a second query
+query TTTTT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> CONSTRUCT WHERE { ?c ex:name ?n . ?c a ex:Company }', 'test/regression/hr_only.ttl') ORDER BY predicate;
+----
+http://data.example.com/company/1	http://example.com/ns#name	Acme	http://www.w3.org/2001/XMLSchema#string	NULL
+http://data.example.com/company/1	http://www.w3.org/1999/02/22-rdf-syntax-ns#type	http://example.com/ns#Company	NULL	NULL
+
+query TTTTT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?c ex:label "firma"@nl } WHERE { ?c a ex:Company }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/company/1	http://example.com/ns#label	firma	http://www.w3.org/1999/02/22-rdf-syntax-ns#langString	nl
+
+# A template blank node is fresh per solution and shared within it
+query II
+SELECT count(DISTINCT object), count(*) FROM execute_sparql('
+  PREFIX ex: <http://example.com/ns#>
+  CONSTRUCT { ?p ex:card _:c . _:c ex:holder ?n . }
+  WHERE { ?p a ex:Employee ; ex:name ?n }',
+  'test/regression/hr_only.ttl') WHERE predicate = 'http://example.com/ns#card';
+----
+2	2
+
+query I
+SELECT count(*) FROM execute_sparql('
+  PREFIX ex: <http://example.com/ns#>
+  CONSTRUCT { ?p ex:card _:c . _:c ex:holder ?n . }
+  WHERE { ?p a ex:Employee ; ex:name ?n }',
+  'test/regression/hr_only.ttl') WHERE subject LIKE '\_:c\_%' ESCAPE '\';
+----
+2
+
+# LIMIT applies to solutions; the template is new vocabulary, so it is not
+# checked against the mapping
+query T
+SELECT object FROM execute_sparql('PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?p ex:brandNewProperty ?n } WHERE { ?p ex:name ?n } ORDER BY ?n LIMIT 1', 'test/regression/hr_only.ttl');
+----
+Acme
+
+# The output can be stored and queried like read_rdf's
+statement ok
+CREATE TABLE people AS SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?p ex:earns ?s } WHERE { ?p ex:salary ?s }', 'test/regression/hr_only.ttl');
+
+query I
+SELECT sum(object::INTEGER) FROM people WHERE object_datatype = 'http://www.w3.org/2001/XMLSchema#integer';
+----
+113000
+
+# sparql_to_sql returns the SQL; DESCRIBE is still rejected
+query I
+SELECT sparql_to_sql('PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?p ex:n ?n } WHERE { ?p ex:name ?n }', 'test/regression/hr_only.ttl') LIKE '%"object_datatype"%';
+----
+true
+
+statement error
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> DESCRIBE ?p WHERE { ?p ex:name ?n }', 'test/regression/hr_only.ttl');
+----
+DESCRIBE is not
+
+# Raw SPARQL: a CONSTRUCT statement run directly
+statement ok
+CALL enable_sparql_parser('test/regression/hr_only.ttl');
+
+query TTTTT rowsort
+PREFIX ex: <http://example.com/ns#> CONSTRUCT { ?p ex:n ?n } WHERE { ?p ex:name ?n ; a ex:Employee }
+----
+http://data.example.com/person/10	http://example.com/ns#n	Ann	http://www.w3.org/2001/XMLSchema#string	NULL
+http://data.example.com/person/11	http://example.com/ns#n	Bob	http://www.w3.org/2001/XMLSchema#string	NULL
+
+statement ok
+CALL disable_sparql_parser();

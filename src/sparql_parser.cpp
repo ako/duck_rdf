@@ -242,7 +242,7 @@ void RegisterSparqlParser(ExtensionLoader &loader) {
 	CreateTableFunctionInfo enable_info(enable_tf);
 	FunctionDescription enable_desc;
 	enable_desc.description =
-	    "Enable treating raw SPARQL SELECT/ASK statements (not wrapped in sparql_to_sql()/execute_sparql()) as "
+	    "Enable treating raw SPARQL SELECT/ASK/CONSTRUCT statements (not wrapped in sparql_to_sql()/execute_sparql()) as "
 	    "first-class statements, translated on the fly via the given R2RML or YARRRML mapping file(s) - the same "
 	    "mapping "
 	    "requirements as sparql_to_sql()/execute_sparql(). This is a database-wide toggle (shared by all "
