@@ -41,7 +41,7 @@ check("join across SQLite and DuckDB files",
       lambda r, t: r[0] == ("Ann", "Acme"))
 check("SPARQL with the server's default mapping, typed",
       "SELECT * FROM sparql('PREFIX ex: <http://example.com/ns#> SELECT ?n ?s WHERE { ?p ex:name ?n ; ex:salary ?s } ORDER BY DESC(?s)')",
-      lambda r, t: r[0] == ("Bob", 61000) and t[1] == "INTEGER")
+      lambda r, t: r[0] == ("Bob", 61000) and t[1] == "BIGINT")
 check("SPARQL reasoning with the server's ontology",
       "SELECT count(*) FROM sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Party }')",
       lambda r, t: r == [(5,)])

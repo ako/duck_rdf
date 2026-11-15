@@ -54,7 +54,7 @@ def connect(cfg):
             config[key] = str(settings[key])
     con = duckdb.connect(":memory:", config=config)
     con.execute(f"LOAD {literal(EXTENSION)}")
-    for ext in ("quack", "parquet", "iceberg", "sqlite_scanner"):
+    for ext in ("quack", "httpfs", "parquet", "iceberg", "sqlite_scanner"):
         con.execute(f"LOAD {ext}")
     return con
 
@@ -136,6 +136,9 @@ def configure_sparql(con, cfg):
 def lock_down(con, data_dir, config_dir):
     """Only the mounted directories stay readable; no settings can change afterwards."""
     dirs = [d.rstrip("/") + "/" for d in (data_dir, config_dir)]
+    # Secrets live in memory only; the stored-secrets directory under ~/.duckdb is
+    # outside the allowed directories, and Quack would fail trying to read it.
+    con.execute("SET allow_persistent_secrets = false")
     con.execute(f"SET allowed_directories = [{', '.join(literal(d) for d in dirs)}]")
     con.execute("SET enable_external_access = false")
     con.execute("SET lock_configuration = true")

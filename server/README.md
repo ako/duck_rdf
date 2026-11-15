@@ -71,6 +71,9 @@ server/stage.sh
 docker build -t duck-rdf-server server/
 ```
 
+An rdf extension built with the system's libxml2 and libcurl (no vcpkg) links them
+dynamically; the image installs both.
+
 `test/smoke_test.sh` builds the image, starts it on a small fixture (one file of
 each kind) and checks SQL, SPARQL, reasoning, typed results and the lock-down
 from a plain DuckDB client.

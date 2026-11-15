@@ -2,7 +2,7 @@
 # Put the extensions the image needs into dist/:
 #   - rdf.duckdb_extension, built from this repository against DuckDB 2.0.0
 #     (run `OVERRIDE_GIT_DESCRIBE=v2.0.0 GEN=ninja make release` first)
-#   - the official core extensions (quack, iceberg and its dependencies, sqlite),
+#   - the official core extensions (quack, httpfs for its crypto, iceberg and its dependencies, sqlite),
 #     installed with the local Python duckdb==2.0.0 and copied from its cache
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -18,9 +18,11 @@ import duckdb, os, shutil, sys
 platform = sys.argv[1]
 c = duckdb.connect()
 assert c.sql("SELECT version()").fetchall()[0][0] == 'v2.0.0', "needs Python duckdb==2.0.0"
-for ext in ("quack", "iceberg", "avro", "sqlite_scanner"):
+wanted = ("quack", "httpfs", "iceberg", "avro", "sqlite_scanner")
+for ext in wanted:
     c.execute(f"INSTALL {ext}")
-rows = c.sql("SELECT extension_name, install_path FROM duckdb_extensions() WHERE installed AND install_path LIKE '%.duckdb_extension'").fetchall()
+rows = [r for r in c.sql("SELECT extension_name, install_path FROM duckdb_extensions() WHERE installed AND install_path LIKE '%.duckdb_extension'").fetchall()
+        if r[0] in wanted]
 target = f"dist/extensions/v2.0.0/{platform}"
 for name, path in rows:
     shutil.copy(path, target)

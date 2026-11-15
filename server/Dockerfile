@@ -7,7 +7,7 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nginx openssl \
+ && apt-get install -y --no-install-recommends nginx openssl libxml2 libcurl4t64 \
  && rm -rf /var/lib/apt/lists/* \
  && pip install --no-cache-dir duckdb==2.0.0
 
@@ -18,7 +18,7 @@ COPY entrypoint.py nginx.conf start.sh /opt/rdf-server/
 RUN chmod +x /opt/rdf-server/start.sh \
  && python3 -c "import duckdb; c = duckdb.connect(config={'allow_unsigned_extensions': 'true'}); \
 c.execute(\"LOAD '/opt/duckdb/rdf.duckdb_extension'\"); \
-[c.execute(f'LOAD {e}') for e in ('quack', 'parquet', 'iceberg', 'sqlite_scanner')]; print('extensions load')"
+[c.execute(f'LOAD {e}') for e in ('quack', 'httpfs', 'parquet', 'iceberg', 'sqlite_scanner')]; print('extensions load')"
 
 VOLUME ["/data", "/config"]
 EXPOSE 9443
