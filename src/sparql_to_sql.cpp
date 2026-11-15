@@ -16,6 +16,9 @@
 #include "duckdb/common/vector_operations/binary_executor.hpp"
 #include "duckdb/execution/expression_executor_state.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
 #include <r2rml/R2RMLMapping.h>
@@ -25,6 +28,7 @@
 #include <sparql2sql/DuckDbDialect.h>
 #include <sparql2sql/Translator.h>
 #include <sparql2sql/TypeCatalog.h>
+#include <sparql2sql/VocabularyCheck.h>
 #include <sql2rdf/TypeCatalogLoader.h>
 #include <exception>
 #include <memory>
@@ -69,6 +73,31 @@ static std::unique_ptr<sparql2sql::TypeCatalog> BuildTypeCatalog(ClientContext &
 	return std::move(catalog);
 }
 
+static constexpr const char *UNKNOWN_TERMS_SETTING = "sparql_unknown_terms";
+
+// Whether a class or property the mapping can never produce is an error
+// ('error', the default) or just a pattern that matches nothing ('ignore').
+// The raw-SPARQL ParserExtension path has no ClientContext and always checks.
+static bool ShouldCheckVocabulary(ClientContext *context) {
+	if (!context) {
+		return true;
+	}
+	Value setting;
+	if (!context->TryGetCurrentSetting(UNKNOWN_TERMS_SETTING, setting) || setting.IsNull()) {
+		return true;
+	}
+	return StringUtil::Lower(setting.ToString()) != "ignore";
+}
+
+static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, Value &parameter) {
+	auto value = StringUtil::Lower(parameter.ToString());
+	if (value != "error" && value != "ignore") {
+		throw InvalidInputException("%s must be 'error' or 'ignore', got '%s'", UNKNOWN_TERMS_SETTING,
+		                            parameter.ToString());
+	}
+	parameter = Value(value);
+}
+
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
                                  const std::string &mapping_path) {
 	if (ResolveMappingFiles(mapping_path).empty()) {
@@ -100,6 +129,16 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 		throw InvalidInputException(DescribeParseError(e));
 	} catch (const std::exception &e) {
 		throw InvalidInputException("SPARQL parse error: %s", e.what());
+	}
+
+	if (ShouldCheckVocabulary(context)) {
+		try {
+			sparql2sql::checkVocabulary(*query, mapping);
+		} catch (const std::exception &e) {
+			throw InvalidInputException("SPARQL vocabulary error: %s. To get an empty result instead, run SET %s = "
+			                            "'ignore'.",
+			                            e.what(), UNKNOWN_TERMS_SETTING);
+		}
 	}
 
 	std::string sql;
@@ -142,6 +181,14 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    "SELECT sparql_to_sql('SELECT ?e ?name WHERE { ?e <http://example.com/ns#name> ?name }', 'mapping.ttl')");
 	info.descriptions.push_back(desc);
 	loader.RegisterFunction(std::move(info));
+
+	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+	config.AddExtensionOption(
+	    UNKNOWN_TERMS_SETTING,
+	    "What sparql_to_sql/execute_sparql do when a SPARQL query names a class or property that no map in the "
+	    "mapping produces: 'error' (default) raises an error naming the term, with a suggestion when it looks like "
+	    "a typo; 'ignore' translates it to a pattern that matches nothing.",
+	    LogicalType::VARCHAR, Value("error"), ValidateUnknownTermsSetting);
 }
 
 } // namespace duckdb
