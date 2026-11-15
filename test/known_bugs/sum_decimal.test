@@ -1,0 +1,31 @@
+# name: test/known_bugs/sum_decimal.test
+# description: KNOWN BUG - SUM over a DECIMAL column mapped as xsd:decimal is
+#   computed in floating point: 0.10 + 0.20 returns "0.30000000000000004".
+#   Found on Postgres numeric(10,2) money totals.
+# group: [known_bugs]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', 2, 61000), (12, 'Cid', 1, 48000), (13, 'Dee', NULL, 70000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme'), (2, 'Globex'), (3, 'Initech')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2)), (2, 0.20::DECIMAL(10,2))) t(id, amount);
+
+statement ok
+CREATE TABLE onto AS SELECT * FROM read_rdf('test/regression/ontology.ttl', prefix_expansion = true);
+
+statement ok
+CREATE VIEW onto_iri AS SELECT subject, predicate, object FROM onto WHERE object LIKE 'http%';
+
+statement ok
+CREATE VIEW onto_lit AS SELECT subject, predicate, object FROM onto WHERE object NOT LIKE 'http%';
+
+# Decimal sum is exact (canonical "0.3" or SQL-style "0.30" both accepted)
+query T
+SELECT v_total IN ('0.3', '0.30') FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?a) AS ?total) WHERE { ?p ex:amount ?a }', 'test/known_bugs/hr_only.ttl');
+----
+true

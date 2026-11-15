@@ -1,0 +1,27 @@
+@prefix rr:  <http://www.w3.org/ns/r2rml#> .
+@prefix ex:  <http://example.com/ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Relational data: emp is a native DuckDB table, company a view over Parquet.
+<#Emp> rr:logicalTable [ rr:tableName "emp" ] ;
+  rr:subjectMap [ rr:template "http://data.example.com/person/{id}" ; rr:class ex:Employee ] ;
+  rr:predicateObjectMap [ rr:predicate ex:name ; rr:objectMap [ rr:column "name" ] ] ;
+  rr:predicateObjectMap [ rr:predicate ex:salary ; rr:objectMap [ rr:column "salary" ; rr:datatype xsd:integer ] ] ;
+  rr:predicateObjectMap [ rr:predicate ex:worksFor ; rr:objectMap [ rr:template "http://data.example.com/company/{company_id}" ] ] .
+
+<#Company> rr:logicalTable [ rr:tableName "company" ] ;
+  rr:subjectMap [ rr:template "http://data.example.com/company/{id}" ; rr:class ex:Company ] ;
+  rr:predicateObjectMap [ rr:predicate ex:name ; rr:objectMap [ rr:column "name" ] ] .
+
+# The ontology itself, loaded with read_rdf into onto_iri (IRI objects) and
+# onto_lit (literal objects), mapped back to triples so SPARQL can join the
+# data with the class hierarchy.
+<#OntoIri> rr:logicalTable [ rr:tableName "onto_iri" ] ;
+  rr:subjectMap [ rr:column "subject" ] ;
+  rr:predicateObjectMap [ rr:predicateMap [ rr:column "predicate" ] ;
+                          rr:objectMap [ rr:column "object" ; rr:termType rr:IRI ] ] .
+
+<#OntoLit> rr:logicalTable [ rr:tableName "onto_lit" ] ;
+  rr:subjectMap [ rr:column "subject" ] ;
+  rr:predicateObjectMap [ rr:predicateMap [ rr:column "predicate" ] ;
+                          rr:objectMap [ rr:column "object" ] ] .

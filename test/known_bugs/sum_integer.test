@@ -1,0 +1,40 @@
+# name: test/known_bugs/sum_integer.test
+# description: KNOWN BUG - integer SUM falls back to floating point.
+#   With a mapping where every ex:salary is an xsd:integer column, SUM stays
+#   integral. As soon as the mapping also has a generic triple map whose
+#   predicate comes from a column (here: the ontology loaded with read_rdf),
+#   ex:salary *might* come from that untyped map and SUM returns "231000.0",
+#   even when ?p is restricted to ex:Employee. AnzoGraph returns "231000".
+# group: [known_bugs]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', 2, 61000), (12, 'Cid', 1, 48000), (13, 'Dee', NULL, 70000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme'), (2, 'Globex'), (3, 'Initech')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2)), (2, 0.20::DECIMAL(10,2))) t(id, amount);
+
+statement ok
+CREATE TABLE onto AS SELECT * FROM read_rdf('test/regression/ontology.ttl', prefix_expansion = true);
+
+statement ok
+CREATE VIEW onto_iri AS SELECT subject, predicate, object FROM onto WHERE object LIKE 'http%';
+
+statement ok
+CREATE VIEW onto_lit AS SELECT subject, predicate, object FROM onto WHERE object NOT LIKE 'http%';
+
+# Control (passes today): only typed maps can produce ex:salary
+query T
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?s) AS ?total) WHERE { ?p ex:salary ?s }', 'test/known_bugs/hr_only.ttl');
+----
+231000
+
+# Bug 1: same data, mapping that also maps the ontology triples
+query T
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?s) AS ?total) WHERE { ?p a ex:Employee ; ex:salary ?s }', 'test/regression/hr_mapping.ttl');
+----
+231000

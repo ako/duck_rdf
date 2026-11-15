@@ -1,0 +1,20 @@
+prefixes:
+  ex: http://example.com/ns#
+mappings:
+  # The link target is a full IRI stored in a plain column. The long form
+  # `type: iri` should make it an IRI; today it is silently ignored.
+  LinkMap:
+    sources:
+      - table: link
+    s: http://data.example.com/person/$(id)
+    po:
+      - p: ex:worksFor
+        o:
+          value: $(target)
+          type: iri
+  CompanyMap:
+    sources:
+      - table: company
+    s: http://data.example.com/company/$(id)
+    po:
+      - [ex:name, $(name)]
