@@ -27,3 +27,15 @@ query T
 SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (SUM(?a) AS ?total) WHERE { ?p ex:amount ?a }', 'test/regression/hr_only.ttl');
 ----
 0.3
+
+# MIN/MAX return one of the stored terms ("0.20", as the DECIMAL(10,2) column renders it),
+# not a canonical re-rendering ("0.2"), so a join on the result finds its row again
+query TT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (MIN(?a) AS ?lo) (MAX(?a) AS ?hi) WHERE { ?p ex:amount ?a }', 'test/regression/hr_only.ttl');
+----
+0.10	0.20
+
+query TT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?a WHERE { { SELECT (MAX(?x) AS ?a) WHERE { ?q ex:amount ?x } } ?p ex:amount ?a }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/payment/2	0.20

@@ -87,9 +87,10 @@ set(SQL2RDF_GIT_REPOSITORY
 # CONSTRUCT queries, typed results, and RDFS-style reasoning by mapping
 # saturation, result term tags, native aggregates, raw-column deduplication, and
 # domain, range, inverse, symmetric and transitive property reasoning, and a
-# shared scan for union arms pinned to one keyed row.
+# shared scan for union arms pinned to one keyed row, and MIN/MAX returning the
+# stored term.
 set(SQL2RDF_GIT_TAG
-    "979b084e90422fd19d663accfd1b56c0eb6a185f"
+    "949064fbd43a64511b8c491c1423097740b3ddb9"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf
