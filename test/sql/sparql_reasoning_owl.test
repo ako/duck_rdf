@@ -1,0 +1,71 @@
+# name: test/sql/sparql_reasoning_owl.test
+# description: Reasoning over rdfs:domain, rdfs:range, owl:inverseOf, owl:SymmetricProperty and owl:TransitiveProperty. Domain and range classes go only to resources that take part in a triple; an inverse swaps subject and object; a transitive property follows chains of any length.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', NULL, 61000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme'), (2, 'Globex')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+statement ok
+CREATE TABLE reports AS SELECT * FROM (VALUES (1, 2, 3), (2, 3, NULL), (3, 4, NULL), (4, NULL, NULL)) t(id, boss, friend);
+
+statement ok
+SET sparql_ontology = 'test/regression/ontology_owl.ttl';
+
+# owl:inverseOf: ex:employs is answered from ex:worksFor
+query TT
+SELECT v_c, v_p FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?c ?p WHERE { ?c ex:employs ?p }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/company/1	http://data.example.com/person/10
+
+# rdfs:range, and its superclass: only the company someone works for (not Globex)
+query T
+SELECT v_x FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Organisation }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/company/1
+
+# rdfs:domain: Bob has no company, so nothing makes him Staff
+query T
+SELECT v_x FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?x WHERE { ?x a ex:Staff }', 'test/regression/hr_only.ttl');
+----
+http://data.example.com/person/10
+
+# owl:TransitiveProperty: 1 reports to 2, 3 and 4
+query T rowsort
+SELECT v_b FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?b WHERE { <http://data.example.com/person/1> ex:reportsTo ?b }', 'test/regression/reports.ttl');
+----
+http://data.example.com/person/2
+http://data.example.com/person/3
+http://data.example.com/person/4
+
+query I
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?a ?b WHERE { ?a ex:reportsTo ?b }', 'test/regression/reports.ttl');
+----
+6
+
+# owl:SymmetricProperty: knows goes both ways
+query T rowsort
+SELECT v_y FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?y WHERE { ?y ex:knows <http://data.example.com/person/1> }', 'test/regression/reports.ttl');
+----
+http://data.example.com/person/3
+
+query T rowsort
+SELECT v_y FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?y WHERE { <http://data.example.com/person/3> ex:knows ?y }', 'test/regression/reports.ttl');
+----
+http://data.example.com/person/1
+
+# Without the ontology, the plain mapping
+statement ok
+SET sparql_ontology = '';
+
+query I
+SELECT count(*) FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?a ?b WHERE { ?a ex:reportsTo ?b }', 'test/regression/reports.ttl');
+----
+3
