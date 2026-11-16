@@ -20,7 +20,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_lower.ttl'
 );
 ----
-SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t1."empno" AS VARCHAR))) AS "v_e", t1."ename" AS "v_name" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)
+SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_e", t3."r1" AS "v_name" FROM (SELECT DISTINCT t1."empno" AS "r0", t1."ename" AS "r1" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)) AS t3
 
 # Same query/mapping via YARRRML (.yml) — proves format-by-extension dispatch
 # produces the same translation as the R2RML Turtle mapping.
@@ -30,7 +30,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_lower.yml'
 );
 ----
-SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t1."empno" AS VARCHAR))) AS "v_e", t1."ename" AS "v_name" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)
+SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_e", t3."r1" AS "v_name" FROM (SELECT DISTINCT t1."empno" AS "r0", t1."ename" AS "r1" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)) AS t3
 
 # ── Success: round-trip execute ──────────────────────────────────────────────
 # The exact SQL text produced above, pasted literally and executed against the
@@ -94,7 +94,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_lower.ttl'
 );
 ----
-WITH RECURSIVE cte1 AS (SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t1."empno" AS VARCHAR))) AS "v_%p1", t1."ename" AS "v_%p2" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)), cte2 AS (SELECT t3."v_%p1" AS "cte_from", t3."v_%p2" AS "cte_to" FROM cte1 AS t3 UNION SELECT t5."cte_from", t4."v_%p2" FROM cte2 AS t5 JOIN cte1 AS t4 ON t5."cte_to" = t4."v_%p1") SELECT t6."cte_from" AS "v_e", t6."cte_to" AS "v_name" FROM cte2 AS t6
+WITH RECURSIVE cte1 AS (SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_%p1", t3."r1" AS "v_%p2" FROM (SELECT DISTINCT t1."empno" AS "r0", t1."ename" AS "r1" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)) AS t3), cte2 AS (SELECT t4."v_%p1" AS "cte_from", t4."v_%p2" AS "cte_to" FROM cte1 AS t4 UNION SELECT t6."cte_from", t5."v_%p2" FROM cte2 AS t6 JOIN cte1 AS t5 ON t6."cte_to" = t5."v_%p1") SELECT t7."cte_from" AS "v_e", t7."cte_to" AS "v_name" FROM cte2 AS t7
 
 # ── Type catalog from rr:sqlQuery views ────────────────────────────────────────
 # test/r2rml/view_types.ttl maps ex:label from BOTH emp.ename (a plain table,
@@ -142,7 +142,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_graph_sparql.ttl'
 );
 ----
-SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t1."empno" AS VARCHAR))) AS "v_e", t1."ename" AS "v_name" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)
+SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_e", t3."r1" AS "v_name" FROM (SELECT DISTINCT t1."empno" AS "r0", t1."ename" AS "r1" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)) AS t3
 
 # GRAPH ?g binds the graph as an ordinary query variable.
 query T
@@ -151,7 +151,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_graph_sparql.ttl'
 );
 ----
-SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t1."empno" AS VARCHAR))) AS "v_e", t1."ename" AS "v_name", 'http://example.com/graph/g1' AS "v_g" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)
+SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_e", t3."r1" AS "v_name", 'http://example.com/graph/g1' AS "v_g" FROM (SELECT DISTINCT t1."empno" AS "r0", t1."ename" AS "r1" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)) AS t3
 
 # ex:department's graph set has two members, so GRAPH ?g must yield one
 # solution per graph - a UNION over the two graph shapes, one constant
@@ -162,7 +162,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_graph_sparql.ttl'
 );
 ----
-(SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t2."empno" AS VARCHAR))) AS "v_e", ('http://data.example.com/department/' || url_encode(CAST(t2."deptno" AS VARCHAR))) AS "v_d", 'http://example.com/graph/g1' AS "v_g" FROM "emp" AS t2 WHERE (t2."empno" IS NOT NULL) AND (t2."deptno" IS NOT NULL)) UNION BY NAME (SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t2."empno" AS VARCHAR))) AS "v_e", ('http://data.example.com/department/' || url_encode(CAST(t2."deptno" AS VARCHAR))) AS "v_d", ('http://example.com/graph/dept/' || url_encode(CAST(t2."deptno" AS VARCHAR))) AS "v_g" FROM "emp" AS t2 WHERE (('http://example.com/graph/dept/' || url_encode(CAST(t2."deptno" AS VARCHAR))) <> 'http://www.w3.org/ns/r2rml#defaultGraph') AND (t2."empno" IS NOT NULL) AND (t2."deptno" IS NOT NULL))
+(SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_e", ('http://data.example.com/department/' || url_encode(CAST(t3."r1" AS VARCHAR))) AS "v_d", 'http://example.com/graph/g1' AS "v_g" FROM (SELECT DISTINCT t2."empno" AS "r0", t2."deptno" AS "r1" FROM "emp" AS t2 WHERE (t2."empno" IS NOT NULL) AND (t2."deptno" IS NOT NULL)) AS t3) UNION BY NAME (SELECT ('http://data.example.com/employee/' || url_encode(CAST(t4."r0" AS VARCHAR))) AS "v_e", ('http://data.example.com/department/' || url_encode(CAST(t4."r1" AS VARCHAR))) AS "v_d", ('http://example.com/graph/dept/' || url_encode(CAST(t4."r1" AS VARCHAR))) AS "v_g" FROM (SELECT DISTINCT t2."empno" AS "r0", t2."deptno" AS "r1" FROM "emp" AS t2 WHERE (('http://example.com/graph/dept/' || url_encode(CAST(t2."deptno" AS VARCHAR))) <> 'http://www.w3.org/ns/r2rml#defaultGraph') AND (t2."empno" IS NOT NULL) AND (t2."deptno" IS NOT NULL)) AS t4)
 
 # Round-trip: pasting the ex:department UNION SQL above literally must return
 # both graphs the triple belongs to for the one row in "emp".
@@ -181,7 +181,7 @@ SELECT sparql_to_sql(
     'test/r2rml/full_r2rml_graph_sparql.ttl'
 );
 ----
-SELECT DISTINCT ('http://data.example.com/employee/' || url_encode(CAST(t1."empno" AS VARCHAR))) AS "v_e", t1."ename" AS "v_name" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)
+SELECT ('http://data.example.com/employee/' || url_encode(CAST(t3."r0" AS VARCHAR))) AS "v_e", t3."r1" AS "v_name" FROM (SELECT DISTINCT t1."empno" AS "r0", t1."ename" AS "r1" FROM "emp" AS t1 WHERE (t1."empno" IS NOT NULL) AND (t1."ename" IS NOT NULL)) AS t3
 
 # With NO dataset clause and NO GRAPH block, strict RDF-dataset semantics say
 # the default graph holds only triples whose graph set is empty or names
