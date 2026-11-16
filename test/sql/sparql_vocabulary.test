@@ -1,8 +1,5 @@
 # name: test/sql/sparql_vocabulary.test
-# description: A SPARQL query naming a class or property that no map produces is an
-#   error (with a "did you mean" suggestion) instead of silently returning zero rows.
-#   SET sparql_unknown_terms = 'ignore' restores the empty result. Mappings with a
-#   generic triple map (predicate from a column) are never rejected.
+# description: A SPARQL query naming a class or property that no map produces is an error (with a "did you mean" suggestion) instead of silently returning zero rows. SET sparql_unknown_terms = 'ignore' restores the empty result. Mappings with a generic triple map (predicate from a column) are never rejected.
 # group: [sql]
 
 require rdf

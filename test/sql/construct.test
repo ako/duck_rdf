@@ -1,6 +1,5 @@
 # name: test/sql/construct.test
-# description: SPARQL CONSTRUCT through execute_sparql, sparql_to_sql and the raw
-#   SPARQL parser. Rows are triples in read_rdf's columns (without graph).
+# description: SPARQL CONSTRUCT through execute_sparql, sparql_to_sql and the raw SPARQL parser. Rows are triples in read_rdf's columns (without graph).
 # group: [sql]
 
 require rdf

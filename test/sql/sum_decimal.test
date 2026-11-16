@@ -1,7 +1,5 @@
 # name: test/sql/sum_decimal.test
-# description: REGRESSION (fixed in sql2rdf f688cd9) - SUM over a DECIMAL column mapped as xsd:decimal is
-#   computed in floating point: 0.10 + 0.20 returns "0.30000000000000004".
-#   Found on Postgres numeric(10,2) money totals.
+# description: REGRESSION (fixed in sql2rdf f688cd9) - SUM over a DECIMAL column mapped as xsd:decimal is computed in floating point: 0.10 + 0.20 returns "0.30000000000000004". Found on Postgres numeric(10,2) money totals.
 # group: [sql]
 
 require rdf
