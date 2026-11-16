@@ -1,7 +1,5 @@
 # name: test/sql/numeric_pushdown.test
-# description: A numeric FILTER on a typed column compares the column directly
-#   (salary > 50000) instead of TRY_CAST(CAST(salary AS VARCHAR) AS DOUBLE), so
-#   DuckDB can push it into Postgres or Parquet/Iceberg scans.
+# description: A numeric FILTER on a typed column compares the column directly (salary > 50000) instead of TRY_CAST(CAST(salary AS VARCHAR) AS DOUBLE), so DuckDB can push it into Postgres or Parquet/Iceberg scans.
 # group: [sql]
 
 require rdf

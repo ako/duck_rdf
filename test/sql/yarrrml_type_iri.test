@@ -1,8 +1,5 @@
 # name: test/sql/yarrrml_type_iri.test
-# description: REGRESSION (fixed in sql2rdf f688cd9) - the YARRRML long form `o: {value: $(col), type: iri}` is
-#   ignored when the value is a plain column reference: the object becomes a
-#   string literal, so a join on it silently returns no rows. The short form
-#   `$(col)~iri` and R2RML `rr:termType rr:IRI` work.
+# description: REGRESSION (fixed in sql2rdf f688cd9) - the YARRRML long form `o: {value: $(col), type: iri}` is ignored when the value is a plain column reference: the object becomes a string literal, so a join on it silently returns no rows. The short form `$(col)~iri` and R2RML `rr:termType rr:IRI` work.
 # group: [sql]
 
 require rdf

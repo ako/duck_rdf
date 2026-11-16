@@ -1,8 +1,5 @@
 # name: test/sql/sparql_reasoning.test
-# description: Reasoning over the ontology's class and property hierarchies.
-#   With an ontology (execute_sparql's ontology parameter, or the
-#   sparql_ontology setting), a query for a class or property also matches its
-#   subclasses and subproperties, each resource once.
+# description: Reasoning over the ontology's class and property hierarchies. With an ontology (execute_sparql's ontology parameter, or the sparql_ontology setting), a query for a class or property also matches its subclasses and subproperties, each resource once.
 # group: [sql]
 
 require rdf

@@ -1,8 +1,5 @@
 # name: test/sql/unique_keys.test
-# description: sparql_unique_keys declares keys for views, which cannot declare
-#   them. RDF is a set, so without a key every table's rows are deduplicated
-#   (SELECT DISTINCT); with one, the translator drops the DISTINCT. Same
-#   answers either way when the key holds.
+# description: sparql_unique_keys declares keys for views, which cannot declare them. RDF is a set, so without a key every table's rows are deduplicated (SELECT DISTINCT); with one, the translator drops the DISTINCT. Same answers either way when the key holds.
 # group: [sql]
 
 require rdf

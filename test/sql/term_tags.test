@@ -1,7 +1,5 @@
 # name: test/sql/term_tags.test
-# description: Term tags. execute_sparql(..., term_tags := true) adds a d_<var>
-#   column beside each SELECT column: I (IRI), B (blank node), D<datatype>,
-#   @<lang>, L (plain literal), NULL when unbound.
+# description: Term tags. execute_sparql(..., term_tags := true) adds a d_<var> column beside each SELECT column: I (IRI), B (blank node), D<datatype>, @<lang>, L (plain literal), NULL when unbound.
 # group: [sql]
 
 require rdf

@@ -1,8 +1,5 @@
 # name: test/sql/typed_results.test
-# description: Typed results. With execute_sparql(..., typed := true) or
-#   SET sparql_typed_results = true, a SELECT column whose datatype the mapping
-#   settles comes back as a native value instead of VARCHAR. IRIs and strings
-#   stay VARCHAR. Off by default.
+# description: Typed results. With execute_sparql(..., typed := true) or SET sparql_typed_results = true, a SELECT column whose datatype the mapping settles comes back as a native value instead of VARCHAR. IRIs and strings stay VARCHAR. Off by default.
 # group: [sql]
 
 require rdf

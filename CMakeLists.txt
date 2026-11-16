@@ -70,12 +70,12 @@ target_include_directories(${SERD_NAME} PRIVATE ${serd_SOURCE_DIR}/include)
 # sql2rdf CMakeLists will skip creating its own serd target if one already
 # exists. The target name MUST be `serd` for that to work
 #
-# Where sql2rdf comes from. Override on the command line, e.g. through the
-# extension Makefile's EXT_FLAGS:
-#   EXT_FLAGS="-DSQL2RDF_GIT_TAG=my-branch" make release
+# Where sql2rdf comes from. Override it on the command line through the
+# extension Makefile's EXT_FLAGS, e.g. EXT_FLAGS="-DSQL2RDF_GIT_TAG=my-branch".
+#
 # For local development against a checkout (no fetch, edits picked up on the
-# next build), use CMake's built-in FetchContent override:
-#   EXT_FLAGS="-DFETCHCONTENT_SOURCE_DIR_SQL2RDF=/path/to/sql2rdf" make release
+# next build), use CMake's built-in FetchContent override, e.g.
+# EXT_FLAGS="-DFETCHCONTENT_SOURCE_DIR_SQL2RDF=/path/to/sql2rdf".
 set(SQL2RDF_GIT_REPOSITORY
     "https://github.com/ako/sql2rdf.git"
     CACHE STRING "Git repository to fetch sql2rdf from")

@@ -1,9 +1,5 @@
 # name: test/sql/iri_pushdown.test
-# description: A constant IRI in a pattern compares the integer key column
-#   directly (company_id = 1) instead of CAST(company_id AS VARCHAR) = '1', so
-#   DuckDB can push it into a Postgres scan or use Parquet/Iceberg min-max
-#   statistics (measured: 582 ms vs 6 ms on Postgres, 88 MB vs 8.8 MB read on
-#   Iceberg).
+# description: A constant IRI in a pattern compares the integer key column directly (company_id = 1) instead of CAST(company_id AS VARCHAR) = '1', so DuckDB can push it into a Postgres scan or use Parquet/Iceberg min-max statistics (measured: 582 ms vs 6 ms on Postgres, 88 MB vs 8.8 MB read on Iceberg).
 # group: [sql]
 
 require rdf
