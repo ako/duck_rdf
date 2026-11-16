@@ -434,6 +434,14 @@ On failure, `sparql_to_sql` raises an error whose message identifies which stage
 
 **Setting `sparql_unknown_terms`** (`'error'` by default). A query that names a class or property no map produces would otherwise just return no rows, which looks the same as "no data". With `'error'`, `sparql_to_sql` and `execute_sparql` raise the vocabulary error above; `SET sparql_unknown_terms = 'ignore'` restores the empty result, for example for a query shared with another endpoint that has more data. The check covers constant properties (also inside property paths) and the classes in `a` / `rdf:type` patterns, anywhere in the query including OPTIONAL, UNION, MINUS, GRAPH, EXISTS and subqueries. A mapping with a generic triple map, whose predicate comes from a column (for example an ontology loaded with `read_rdf` and mapped as rows), can produce any term, so such queries are never rejected. Raw SPARQL run through `enable_sparql_parser` always uses `'error'`, since that path has no session settings.
 
+**Setting `sparql_unique_keys`** (empty by default). RDF is a set: a triple produced by two identical table rows appears once. So unless the database declares a PRIMARY KEY or UNIQUE constraint covering a table's subject columns, the generated SQL deduplicates that table's rows with `SELECT DISTINCT`, building every IRI as text first. A view over Parquet or Iceberg files cannot declare a key, and on large files this deduplication dominates the run time (counting 10 million orders: about 500 ms with it, a few milliseconds without). The setting declares keys the database cannot, using the table and column names the mapping uses:
+
+```sql
+SET sparql_unique_keys = 'orders(oid); customer(cid); order_lines(oid, line)';
+```
+
+Each listed column set must be unique and non-null in the data. The setting is an assertion, not a check: a key that does not hold returns duplicate rows. It is validated for syntax when set. The DuckGraphLake server detects keys itself at start-up (a column used in a mapping template, checked to be unique and non-null) and sets this for you.
+
 **Example**
 
 ```sql

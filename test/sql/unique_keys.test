@@ -1,0 +1,82 @@
+# name: test/sql/unique_keys.test
+# description: sparql_unique_keys declares keys for views, which cannot declare
+#   them. RDF is a set, so without a key every table's rows are deduplicated
+#   (SELECT DISTINCT); with one, the translator drops the DISTINCT. Same
+#   answers either way when the key holds.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE VIEW emp_rows AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', 1, 61000), (12, 'Cy', 2, 48000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE VIEW emp AS SELECT * FROM emp_rows;
+
+statement ok
+CREATE VIEW company AS SELECT * FROM (VALUES (1, 'Acme'), (2, 'Globex')) t(id, name);
+
+statement ok
+CREATE VIEW payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Without keys: the views get a DISTINCT
+query I
+SELECT sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:name ?n ; ex:salary ?s }', 'test/regression/hr_only.ttl') LIKE '%DISTINCT%';
+----
+true
+
+query TT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?n ?c WHERE { ?p ex:name ?n ; ex:worksFor/ex:name ?c } ORDER BY ?n', 'test/regression/hr_only.ttl');
+----
+Ann	Acme
+Bob	Acme
+Cy	Globex
+
+statement ok
+SET sparql_unique_keys = 'emp(id); company(id)';
+
+# With keys: no DISTINCT, same answers
+query I
+SELECT sparql_to_sql('PREFIX ex: <http://example.com/ns#> SELECT ?p ?n WHERE { ?p ex:name ?n ; ex:salary ?s }', 'test/regression/hr_only.ttl') LIKE '%DISTINCT%';
+----
+false
+
+query TT
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT ?n ?c WHERE { ?p ex:name ?n ; ex:worksFor/ex:name ?c } ORDER BY ?n', 'test/regression/hr_only.ttl');
+----
+Ann	Acme
+Bob	Acme
+Cy	Globex
+
+query I
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (COUNT(?p) AS ?n) WHERE { ?p a ex:Employee }', 'test/regression/hr_only.ttl');
+----
+3
+
+# A key that does not hold gives duplicate rows: the setting is an assertion
+statement ok
+CREATE OR REPLACE VIEW emp AS SELECT * FROM emp_rows UNION ALL SELECT * FROM emp_rows WHERE id = 10;
+
+query I
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (COUNT(?p) AS ?n) WHERE { ?p a ex:Employee }', 'test/regression/hr_only.ttl');
+----
+4
+
+statement ok
+RESET sparql_unique_keys;
+
+query I
+SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (COUNT(?p) AS ?n) WHERE { ?p a ex:Employee }', 'test/regression/hr_only.ttl');
+----
+3
+
+# Bad syntax is refused when set
+statement error
+SET sparql_unique_keys = 'emp id';
+----
+expected table(column, ...)
+
+statement error
+SET sparql_unique_keys = 'emp()';
+----
+expected table(column, ...)
