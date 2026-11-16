@@ -1,0 +1,95 @@
+# name: test/sql/sparql_mapping_cache.test
+# description: The prepared mapping (parsed mapping, ontology, column types and keys from the catalog) is cached between queries, and rebuilt when a mapping file changes, a schema change is committed, or a setting it depends on changes. Uncommitted schema changes bypass the cache. sparql_mapping_cache = false turns it off.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE t AS SELECT 1 AS id, 42 AS v;
+
+statement ok
+COPY (SELECT '@prefix rr: <http://www.w3.org/ns/r2rml#> . @prefix ex: <http://example.com/ns#> . <#M> rr:logicalTable [ rr:tableName "t" ] ; rr:subjectMap [ rr:template "http://data.example.com/t/{id}" ; rr:class ex:A ] ; rr:predicateObjectMap [ rr:predicate ex:v ; rr:objectMap [ rr:column "v" ] ] .' AS line) TO '__TEST_DIR__/cache_map.ttl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query T
+SELECT typeof(v_v) FROM execute_sparql('SELECT ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl', typed := true);
+----
+INTEGER
+
+# The same query again comes from the cache
+query T
+SELECT typeof(v_v) FROM execute_sparql('SELECT ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl', typed := true);
+----
+INTEGER
+
+# A committed schema change: the column types are read again
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT 1 AS id, 4.5::DOUBLE AS v;
+
+query T
+SELECT typeof(v_v) FROM execute_sparql('SELECT ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl', typed := true);
+----
+DOUBLE
+
+# A schema change in an open transaction bypasses the cache, and is not cached
+# for others. (The column types themselves come from the committed catalog: it
+# is read on a separate connection.)
+statement ok
+BEGIN;
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT 1 AS id, 7::BIGINT AS v;
+
+query T
+SELECT v_v::VARCHAR FROM execute_sparql('SELECT ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl', typed := true);
+----
+7.0
+
+statement ok
+ROLLBACK;
+
+query T
+SELECT typeof(v_v) FROM execute_sparql('SELECT ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl', typed := true);
+----
+DOUBLE
+
+# A changed mapping file is parsed again
+query T
+SELECT v_s FROM execute_sparql('SELECT ?s WHERE { ?s a <http://example.com/ns#A> }', '__TEST_DIR__/cache_map.ttl');
+----
+http://data.example.com/t/1
+
+statement ok
+COPY (SELECT '@prefix rr: <http://www.w3.org/ns/r2rml#> . @prefix ex: <http://example.com/ns#> . <#M> rr:logicalTable [ rr:tableName "t" ] ; rr:subjectMap [ rr:template "http://data.example.com/thing/{id}" ; rr:class ex:Bee ] ; rr:predicateObjectMap [ rr:predicate ex:v ; rr:objectMap [ rr:column "v" ] ] .' AS line) TO '__TEST_DIR__/cache_map.ttl' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query T
+SELECT v_s FROM execute_sparql('SELECT ?s WHERE { ?s a <http://example.com/ns#Bee> }', '__TEST_DIR__/cache_map.ttl');
+----
+http://data.example.com/thing/1
+
+statement error
+SELECT * FROM execute_sparql('SELECT ?s WHERE { ?s a <http://example.com/ns#A> }', '__TEST_DIR__/cache_map.ttl');
+----
+SPARQL vocabulary error
+
+# Declared keys are part of the cache key
+query I
+SELECT sparql_to_sql('SELECT ?s ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl') LIKE '%DISTINCT%';
+----
+true
+
+statement ok
+SET sparql_unique_keys = 't(id)';
+
+query I
+SELECT sparql_to_sql('SELECT ?s ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl') LIKE '%DISTINCT%';
+----
+false
+
+# Turned off, every query prepares the mapping afresh
+statement ok
+SET sparql_mapping_cache = false;
+
+query T
+SELECT typeof(v_v) FROM execute_sparql('SELECT ?v WHERE { ?s <http://example.com/ns#v> ?v }', '__TEST_DIR__/cache_map.ttl', typed := true);
+----
+DOUBLE

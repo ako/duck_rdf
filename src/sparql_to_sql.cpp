@@ -25,6 +25,11 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/constants.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/database_manager.hpp"
+#include "duckdb/storage/object_cache.hpp"
 #include <r2rml/R2RMLMapping.h>
 #include <r2rml/SQLResultSet.h>
 #include <r2rml/SQLRow.h>
@@ -168,15 +173,20 @@ static std::string OntologyPath(ClientContext *context, const std::string *ontol
 	return setting.ToString();
 }
 
-// Read the class and property hierarchy axioms of an ontology file (any RDF
-// format read_rdf accepts, a glob, compressed or not) through the calling
-// connection, and expand the mapping with them.
-static void ApplyOntology(ClientContext &context, const std::string &path, r2rml::R2RMLMapping &mapping) {
+// Read the ontology axioms sparql2sql uses (class and property hierarchies,
+// domains, ranges, inverse, symmetric and transitive properties) from RDF
+// files (any format read_rdf accepts, a glob, compressed or not) through the
+// calling connection.
+static sparql2sql::Ontology ReadOntology(ClientContext &context, const std::string &path) {
 	const std::string sql =
 	    "SELECT subject AS s, predicate AS p, object AS o FROM read_rdf(" + KeywordHelper::WriteQuoted(path, '\'') +
-	    ", prefix_expansion = true) WHERE predicate IN ("
+	    ", prefix_expansion = true) WHERE (predicate IN ("
 	    "'http://www.w3.org/2000/01/rdf-schema#subClassOf', 'http://www.w3.org/2000/01/rdf-schema#subPropertyOf', "
-	    "'http://www.w3.org/2002/07/owl#equivalentClass', 'http://www.w3.org/2002/07/owl#equivalentProperty') "
+	    "'http://www.w3.org/2002/07/owl#equivalentClass', 'http://www.w3.org/2002/07/owl#equivalentProperty', "
+	    "'http://www.w3.org/2000/01/rdf-schema#domain', 'http://www.w3.org/2000/01/rdf-schema#range', "
+	    "'http://www.w3.org/2002/07/owl#inverseOf') OR (predicate = "
+	    "'http://www.w3.org/1999/02/22-rdf-syntax-ns#type' AND object IN ("
+	    "'http://www.w3.org/2002/07/owl#TransitiveProperty', 'http://www.w3.org/2002/07/owl#SymmetricProperty'))) "
 	    "AND object_datatype IS NULL AND object_lang IS NULL AND contains(object, ':')";
 	if (FileSystem::GetFileSystem(context).Glob(path).empty()) {
 		throw InvalidInputException("SPARQL ontology error: no file matches '%s'", path);
@@ -194,7 +204,159 @@ static void ApplyOntology(ClientContext &context, const std::string &path, r2rml
 		// The nested query reports DuckDB's error as JSON; keep only its message.
 		throw InvalidInputException("SPARQL ontology error: could not read '%s': %s", path, ErrorData(e).RawMessage());
 	}
-	sparql2sql::saturateMapping(mapping, ontology);
+	return ontology;
+}
+
+// Everything about a mapping that does not depend on the query: the parsed
+// mapping, saturated with the ontology, and the type catalog. Building it is
+// most of the cost of a translation (reading the catalog alone is a few
+// milliseconds), so it is cached; see GetPreparedMapping.
+struct PreparedMapping {
+	r2rml::R2RMLMapping mapping;
+	sparql2sql::Ontology ontology;
+	std::unique_ptr<sparql2sql::TypeCatalog> catalog;
+};
+
+static std::shared_ptr<const PreparedMapping> PrepareMapping(ClientContext *context, const std::string &mapping_path,
+                                                             const std::string &ontology_path) {
+	auto paths = ResolveMappingFiles(mapping_path);
+	if (paths.empty()) {
+		throw IOException("Mapping file not found: " + mapping_path);
+	}
+	auto prepared = std::make_shared<PreparedMapping>();
+	try {
+		prepared->mapping = ParseR2RMLOrYarrrmlMapping(paths, mapping_path, true);
+	} catch (const std::runtime_error &e) {
+		throw InvalidInputException("R2RML/YARRRML mapping parse error: %s", e.what());
+	}
+
+	if (!prepared->mapping.isValid()) {
+		throw InvalidInputException(
+		    "Mapping '%s' is not a valid full R2RML mapping. sparql_to_sql() translates a SPARQL query into "
+		    "a standalone SQL query, so every TriplesMap in the mapping must declare an rr:logicalTable (or "
+		    "YARRRML 'sources') naming the table/view to query. An inside-out-only mapping (one that "
+		    "can_call_inside_out() accepts but is_valid_r2rml() rejects) is not sufficient here.",
+		    mapping_path.c_str());
+	}
+
+	if (!ontology_path.empty()) {
+		if (!context) {
+			throw InvalidInputException("SPARQL ontology error: an ontology needs a database connection to read it");
+		}
+		prepared->ontology = ReadOntology(*context, ontology_path);
+		sparql2sql::saturateMapping(prepared->mapping, prepared->ontology);
+	}
+	if (context) {
+		prepared->catalog = BuildTypeCatalog(*context, &prepared->mapping);
+	}
+	return prepared;
+}
+
+static constexpr const char *CACHE_SETTING = "sparql_mapping_cache";
+
+static bool UseMappingCache(ClientContext &context) {
+	Value setting;
+	if (!context.TryGetCurrentSetting(CACHE_SETTING, setting) || setting.IsNull()) {
+		return true;
+	}
+	return BooleanValue::Get(setting.DefaultCastAs(LogicalType::BOOLEAN));
+}
+
+// Appends path, size and modification time of `path` to `token`; false if the
+// file cannot be opened.
+static bool AppendFileStamp(FileSystem &fs, const std::string &path, std::string &token) {
+	try {
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		token += path + '\x1f' + std::to_string(fs.GetFileSize(*handle)) + '\x1f' +
+		         std::to_string(fs.GetLastModifiedTime(*handle).value) + '\x1e';
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
+// What a cached PreparedMapping depends on besides its key: the mapping and
+// ontology files (path, size, modification time) and every attached
+// database's catalog version, which DuckDB bumps on each committed schema
+// change. Empty when it cannot be cached: a file that cannot be read, or
+// catalog changes not yet committed in this transaction (other connections
+// do not see them).
+static std::string ValidityToken(ClientContext &context, const std::string &mapping_path,
+                                 const std::string &ontology_path) {
+	std::string token;
+	auto &local_fs = FileSystem::GetFileSystem(context);
+	for (auto &path : ResolveMappingFiles(mapping_path)) {
+		if (!AppendFileStamp(local_fs, path, token)) {
+			return std::string();
+		}
+	}
+	token += '\x1d';
+	if (!ontology_path.empty()) {
+		auto &fs = FileSystem::GetFileSystem(context);
+		for (auto &file : fs.Glob(ontology_path)) {
+			if (!AppendFileStamp(fs, file.path, token)) {
+				return std::string();
+			}
+		}
+	}
+	token += '\x1d';
+	for (auto &db : DatabaseManager::Get(context).GetDatabases(context)) {
+		auto version = db->GetCatalog().GetCatalogVersion(context);
+		if (version.IsValid() && version.GetIndex() >= TRANSACTION_ID_START) {
+			return std::string();
+		}
+		token += db->GetName() + '=' + (version.IsValid() ? std::to_string(version.GetIndex()) : "?") + ';';
+	}
+	return token;
+}
+
+class PreparedMappingCacheEntry : public ObjectCacheEntry {
+public:
+	PreparedMappingCacheEntry(std::string token_p, std::shared_ptr<const PreparedMapping> prepared_p)
+	    : token(std::move(token_p)), prepared(std::move(prepared_p)) {
+	}
+	static string ObjectType() {
+		return "rdf_prepared_mapping";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override {
+		return optional_idx(idx_t(256) * 1024); // a rough size, so DuckDB may evict it
+	}
+
+	const std::string token;
+	const std::shared_ptr<const PreparedMapping> prepared;
+};
+
+// The prepared mapping for this mapping, ontology and set of declared keys:
+// from DuckDB's object cache when nothing it depends on has changed, freshly
+// built (and cached) otherwise.
+static std::shared_ptr<const PreparedMapping>
+GetPreparedMapping(ClientContext *context, const std::string &mapping_path, const std::string &ontology_path) {
+	if (!context || !UseMappingCache(*context)) {
+		return PrepareMapping(context, mapping_path, ontology_path);
+	}
+	Value keys;
+	std::string key_setting;
+	if (context->TryGetCurrentSetting(UNIQUE_KEYS_SETTING, keys) && !keys.IsNull()) {
+		key_setting = keys.ToString();
+	}
+	const std::string cache_key =
+	    std::string("rdf_prepared_mapping\x1f") + mapping_path + '\x1f' + ontology_path + '\x1f' + key_setting;
+	const std::string token = ValidityToken(*context, mapping_path, ontology_path);
+	auto &cache = ObjectCache::GetObjectCache(*context);
+	if (!token.empty()) {
+		auto entry = cache.Get<PreparedMappingCacheEntry>(cache_key);
+		if (entry && entry->token == token) {
+			return entry->prepared;
+		}
+	}
+	auto prepared = PrepareMapping(context, mapping_path, ontology_path);
+	if (!token.empty()) {
+		cache.Put(cache_key, make_shared_ptr<PreparedMappingCacheEntry>(token, prepared));
+	}
+	return prepared;
 }
 
 static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, Value &parameter) {
@@ -209,34 +371,7 @@ static void ValidateUnknownTermsSetting(ClientContext &context, SetScope scope, 
 std::string TranslateSparqlToSql(ClientContext *context, const std::string &sparql_text,
                                  const std::string &mapping_path, SparqlResultTypes result_types,
                                  const std::string *ontology_override, bool term_tags) {
-	if (ResolveMappingFiles(mapping_path).empty()) {
-		throw IOException("Mapping file not found: " + mapping_path);
-	}
-
-	r2rml::R2RMLMapping mapping;
-	try {
-		auto paths = ResolveMappingFiles(mapping_path);
-		mapping = ParseR2RMLOrYarrrmlMapping(paths, mapping_path, true);
-	} catch (const std::runtime_error &e) {
-		throw InvalidInputException("R2RML/YARRRML mapping parse error: %s", e.what());
-	}
-
-	if (!mapping.isValid()) {
-		throw InvalidInputException(
-		    "Mapping '%s' is not a valid full R2RML mapping. sparql_to_sql() translates a SPARQL query into "
-		    "a standalone SQL query, so every TriplesMap in the mapping must declare an rr:logicalTable (or "
-		    "YARRRML 'sources') naming the table/view to query. An inside-out-only mapping (one that "
-		    "can_call_inside_out() accepts but is_valid_r2rml() rejects) is not sufficient here.",
-		    mapping_path.c_str());
-	}
-
-	const std::string ontology_path = OntologyPath(context, ontology_override);
-	if (!ontology_path.empty()) {
-		if (!context) {
-			throw InvalidInputException("SPARQL ontology error: an ontology needs a database connection to read it");
-		}
-		ApplyOntology(*context, ontology_path, mapping);
-	}
+	auto prepared = GetPreparedMapping(context, mapping_path, OntologyPath(context, ontology_override));
 
 	std::unique_ptr<sparql::ast::Query> query;
 	try {
@@ -247,10 +382,11 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 	} catch (const std::exception &e) {
 		throw InvalidInputException("SPARQL parse error: %s", e.what());
 	}
+	sparql2sql::applyTransitiveProperties(*query, prepared->ontology);
 
 	if (ShouldCheckVocabulary(context)) {
 		try {
-			sparql2sql::checkVocabulary(*query, mapping);
+			sparql2sql::checkVocabulary(*query, prepared->mapping);
 		} catch (const std::exception &e) {
 			throw InvalidInputException("SPARQL vocabulary error: %s. To get an empty result instead, run SET %s = "
 			                            "'ignore'.",
@@ -261,11 +397,10 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 	std::string sql;
 	try {
 		sparql2sql::DuckDbDialect dialect;
-		auto catalog = context ? BuildTypeCatalog(*context, &mapping) : nullptr;
 		sparql2sql::TranslateOptions options;
 		options.typedResults = UseTypedResults(context, result_types);
 		options.termTags = term_tags;
-		sql = sparql2sql::translateQuery(*query, mapping, dialect, catalog.get(), options);
+		sql = sparql2sql::translateQuery(*query, prepared->mapping, dialect, prepared->catalog.get(), options);
 	} catch (const std::exception &e) {
 		throw InvalidInputException("SPARQL-to-SQL translation error: %s", e.what());
 	}
@@ -318,10 +453,11 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
 	config.AddExtensionOption(
 	    ONTOLOGY_SETTING,
-	    "Path or glob of RDF files (any format read_rdf accepts) whose rdfs:subClassOf, rdfs:subPropertyOf, "
-	    "owl:equivalentClass and owl:equivalentProperty axioms sparql_to_sql/execute_sparql answer queries under: a "
-	    "query for a class or property also matches its subclasses and subproperties. Empty (the default) means no "
-	    "ontology. execute_sparql's ontology parameter overrides it.",
+	    "Path or glob of RDF files (any format read_rdf accepts) whose axioms sparql_to_sql/execute_sparql answer "
+	    "queries under: rdfs:subClassOf, rdfs:subPropertyOf, owl:equivalentClass, owl:equivalentProperty, "
+	    "rdfs:domain, rdfs:range, owl:inverseOf, owl:SymmetricProperty and owl:TransitiveProperty. A query for a "
+	    "class or property then also matches what the ontology implies. Empty (the default) means no ontology. "
+	    "execute_sparql's ontology parameter overrides it.",
 	    LogicalType::VARCHAR, Value(""));
 	config.AddExtensionOption(
 	    UNIQUE_KEYS_SETTING,
@@ -330,6 +466,13 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    "and non-null in the data: sparql_to_sql/execute_sparql then drop the DISTINCT that RDF set semantics "
 	    "otherwise require for that table. A wrong key returns duplicate rows. Empty (the default) means none.",
 	    LogicalType::VARCHAR, Value(""), ValidateUniqueKeysSetting);
+	config.AddExtensionOption(
+	    CACHE_SETTING,
+	    "When true (the default), sparql_to_sql/execute_sparql keep each parsed mapping, with its ontology and the "
+	    "column types and keys read from the catalog, in DuckDB's object cache, and reuse it until a mapping or "
+	    "ontology file changes or a schema change is committed. Set it to false to rebuild them for every query, "
+	    "e.g. when an attached database that has no catalog version (SQLite, Postgres) changes its schema.",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 }
 
 } // namespace duckdb

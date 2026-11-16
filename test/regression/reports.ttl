@@ -1,0 +1,8 @@
+@prefix rr:  <http://www.w3.org/ns/r2rml#> .
+@prefix ex:  <http://example.com/ns#> .
+
+# A reporting chain and a "knows" relation, for test/sql/sparql_reasoning_owl.test.
+<#Reports> rr:logicalTable [ rr:tableName "reports" ] ;
+  rr:subjectMap [ rr:template "http://data.example.com/person/{id}" ] ;
+  rr:predicateObjectMap [ rr:predicate ex:reportsTo ; rr:objectMap [ rr:template "http://data.example.com/person/{boss}" ] ] ;
+  rr:predicateObjectMap [ rr:predicate ex:knows ; rr:objectMap [ rr:template "http://data.example.com/person/{friend}" ] ] .

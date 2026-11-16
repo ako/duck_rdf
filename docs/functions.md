@@ -442,6 +442,8 @@ SET sparql_unique_keys = 'orders(oid); customer(cid); order_lines(oid, line)';
 
 Each listed column set must be unique and non-null in the data. The setting is an assertion, not a check: a key that does not hold returns duplicate rows. It is validated for syntax when set. The DuckGraphLake server detects keys itself at start-up (a column used in a mapping template, checked to be unique and non-null) and sets this for you.
 
+**Setting `sparql_mapping_cache`** (`true` by default). Most of a translation's cost does not depend on the query: parsing the mapping, reading and applying the ontology, and reading column types and keys from the catalog (`information_schema` and a `DESCRIBE` per `rr:sqlQuery` view). Together that is several milliseconds, against a fraction of a millisecond for parsing and translating the query itself. So `sparql_to_sql` and `execute_sparql` keep the prepared mapping in DuckDB's object cache, keyed by mapping path, ontology and `sparql_unique_keys`, and shared by all connections to the database. It is rebuilt when a mapping or ontology file changes (size or modification time), or when any attached database commits a schema change (DuckDB's catalog version). In a transaction with uncommitted schema changes the cache is bypassed. Attached databases that report no catalog version (SQLite, Postgres) are not watched: after a schema change there, set this to `false` (or reconnect). The column types and keys come from the committed catalog either way, since they are read on a separate connection.
+
 **Example**
 
 ```sql
@@ -478,13 +480,18 @@ Like `sparql_to_sql`, `execute_sparql` has no libcurl/libxml2 dependency and is 
 
 A table whose schema is whatever the translated SQL produces: one column per SPARQL SELECT variable (named `v_<variable>`), holding the VARCHAR lexical form of each bound RDF term — the same shape you'd get from running `sparql_to_sql`'s output SQL yourself.
 
-<a id="reasoning"></a>**Reasoning.** With an ontology, given as `ontology := 'onto.ttl'` or `SET sparql_ontology = 'onto.ttl'` (which also applies to `sparql_to_sql`), queries are answered under the ontology's class and property hierarchies. A query for `ex:Party` then also returns every `ex:Person` and `ex:Company`, and each resource appears once even when several subclasses apply.
+<a id="reasoning"></a>**Reasoning.** With an ontology, given as `ontology := 'onto.ttl'` or `SET sparql_ontology = 'onto.ttl'` (which also applies to `sparql_to_sql`), queries are answered under what the ontology implies. A query for `ex:Party` then also returns every `ex:Person` and `ex:Company`, and each resource appears once even when several subclasses apply; `?c ex:employs ?p` is answered from `ex:worksFor` when one is declared the inverse of the other.
 
 - **Ontology file:** any RDF file `read_rdf` accepts (Turtle, N-Triples, RDF/XML, …), a glob, or a compressed file.
-- **Axioms used:** `rdfs:subClassOf`, `rdfs:subPropertyOf`, `owl:equivalentClass` and `owl:equivalentProperty` between named classes and properties, followed through chains. Other triples and OWL restrictions are ignored.
-- **How:** the mapping is expanded before translation, so every map producing a class or property also produces its superclasses and superproperties. The vocabulary check therefore accepts inferred terms, and the generated SQL is an ordinary union over the tables involved. There is no reasoner at query time.
+- **Axioms used**, between named classes and properties:
+  - `rdfs:subClassOf`, `rdfs:subPropertyOf`, `owl:equivalentClass`, `owl:equivalentProperty`, followed through chains.
+  - `rdfs:domain` and `rdfs:range`: the subject (or an IRI object) of a triple with that property gets the class. Only resources that take part in such a triple do: a row whose object column is NULL types nothing. Literal objects get no range class.
+  - `owl:inverseOf`, and `owl:SymmetricProperty` (a property that is its own inverse): subject and object swapped.
+  - `owl:TransitiveProperty`: a pattern with the property follows chains of any length (`?a ex:partOf ?b` matches `ex:partOf+`).
+  - Other triples and OWL restrictions are ignored.
+- **How:** the mapping is expanded before translation, so every map producing a class or property also produces what it implies. Inverses, domains and ranges add maps; where the object may be NULL, or comes through a join, those read a filtered view of the table (`IS NOT NULL`, or `EXISTS` across the join). Transitive properties are the exception: the query is rewritten to a property path, answered with a recursive CTE. The vocabulary check accepts inferred terms, and the generated SQL is an ordinary union over the tables involved. There is no reasoner at query time.
 - **Not supported:**
-  - `rdfs:domain`/`rdfs:range`, inverse and transitive properties, and OWL class expressions.
+  - OWL class expressions (restrictions, unions, intersections), property chains, functional properties and `owl:sameAs`.
   - Facts from a generic triple map (predicate or class taken from a column).
   - Raw SPARQL statements (`enable_sparql_parser`), which have no connection to read the ontology with.
 

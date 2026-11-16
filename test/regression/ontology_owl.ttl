@@ -1,0 +1,11 @@
+@prefix ex:   <http://example.com/ns#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# Used by test/sql/sparql_reasoning_owl.test with hr_only.ttl and reports.ttl.
+ex:employs   owl:inverseOf ex:worksFor .
+ex:worksFor  rdfs:range ex:Employer ;
+             rdfs:domain ex:Staff .
+ex:Employer  rdfs:subClassOf ex:Organisation .
+ex:reportsTo a owl:TransitiveProperty .
+ex:knows     a owl:SymmetricProperty .
