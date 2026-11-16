@@ -1,5 +1,6 @@
 #include "include/sparql_to_sql.hpp"
 #include "include/r2rml_copy.hpp"
+#include <set>
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/common/enums/vector_type.hpp"
 #include "duckdb/common/error_data.hpp"
@@ -68,6 +69,42 @@ static std::string DescribeParseError(const sparql::ParseError &e) {
 // backend reports constraints for an arbitrary query's result). Any failure
 // here must never break translation - fall back to nullptr (today's
 // behavior).
+static constexpr const char *UNIQUE_KEYS_SETTING = "sparql_unique_keys";
+
+// Parse the sparql_unique_keys setting: `table(col, ...); table(col); ...`,
+// table and column names as the mapping writes them. Throws on bad syntax.
+static std::vector<std::pair<std::string, std::set<std::string>>> ParseUniqueKeys(const std::string &text) {
+	std::vector<std::pair<std::string, std::set<std::string>>> keys;
+	for (auto &entry : StringUtil::Split(text, ';')) {
+		StringUtil::Trim(entry);
+		if (entry.empty()) {
+			continue;
+		}
+		auto open = entry.find('(');
+		if (open == std::string::npos || entry.back() != ')') {
+			throw InvalidInputException("%s: expected table(column, ...), got '%s'", UNIQUE_KEYS_SETTING, entry);
+		}
+		std::string table = entry.substr(0, open);
+		StringUtil::Trim(table);
+		std::set<std::string> columns;
+		for (auto &col : StringUtil::Split(entry.substr(open + 1, entry.size() - open - 2), ',')) {
+			StringUtil::Trim(col);
+			if (!col.empty()) {
+				columns.insert(col);
+			}
+		}
+		if (table.empty() || columns.empty()) {
+			throw InvalidInputException("%s: expected table(column, ...), got '%s'", UNIQUE_KEYS_SETTING, entry);
+		}
+		keys.emplace_back(table, columns);
+	}
+	return keys;
+}
+
+static void ValidateUniqueKeysSetting(ClientContext &context, SetScope scope, Value &parameter) {
+	ParseUniqueKeys(parameter.ToString());
+}
+
 static std::unique_ptr<sparql2sql::TypeCatalog> BuildTypeCatalog(ClientContext &context,
                                                                  const r2rml::R2RMLMapping *mapping) {
 	auto catalog = make_uniq<sparql2sql::TypeCatalog>();
@@ -76,6 +113,15 @@ static std::unique_ptr<sparql2sql::TypeCatalog> BuildTypeCatalog(ClientContext &
 		sql2rdf::loadTypeCatalog(conn, mapping, *catalog);
 	} catch (...) {
 		return nullptr;
+	}
+	// Keys the database cannot declare (a view over Parquet or Iceberg files),
+	// asserted by whoever runs the query. They let the translator drop the
+	// per-table DISTINCT the RDF set semantics otherwise require.
+	Value keys;
+	if (context.TryGetCurrentSetting(UNIQUE_KEYS_SETTING, keys) && !keys.IsNull()) {
+		for (auto &key : ParseUniqueKeys(keys.ToString())) {
+			catalog->uniqueKeys[key.first].push_back(key.second);
+		}
 	}
 	return std::move(catalog);
 }
@@ -277,6 +323,13 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    "query for a class or property also matches its subclasses and subproperties. Empty (the default) means no "
 	    "ontology. execute_sparql's ontology parameter overrides it.",
 	    LogicalType::VARCHAR, Value(""));
+	config.AddExtensionOption(
+	    UNIQUE_KEYS_SETTING,
+	    "Keys for tables and views that cannot declare them (views over Parquet or Iceberg files), as "
+	    "'table(column, ...); table(column)' with the names the mapping uses. Each listed column set must be unique "
+	    "and non-null in the data: sparql_to_sql/execute_sparql then drop the DISTINCT that RDF set semantics "
+	    "otherwise require for that table. A wrong key returns duplicate rows. Empty (the default) means none.",
+	    LogicalType::VARCHAR, Value(""), ValidateUniqueKeysSetting);
 }
 
 } // namespace duckdb
