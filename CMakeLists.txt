@@ -90,7 +90,7 @@ set(SQL2RDF_GIT_REPOSITORY
 # shared scan for union arms pinned to one keyed row, and MIN/MAX returning the
 # stored term.
 set(SQL2RDF_GIT_TAG
-    "949064fbd43a64511b8c491c1423097740b3ddb9"
+    "10117dc419b975026e5daffd7c8c437e97b7e01a"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf
