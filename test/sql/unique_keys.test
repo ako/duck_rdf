@@ -50,6 +50,20 @@ SELECT * FROM execute_sparql('PREFIX ex: <http://example.com/ns#> SELECT (COUNT(
 ----
 3
 
+# All properties of one subject: the arms that read emp share one scan of the keyed row
+query I
+SELECT sparql_to_sql('SELECT ?p ?v WHERE { <http://data.example.com/person/10> ?p ?v }', 'test/regression/hr_only.ttl') LIKE '%"emp" AS s WHERE s."id" = 10%';
+----
+true
+
+query TT rowsort
+SELECT * FROM execute_sparql('SELECT ?p ?v WHERE { <http://data.example.com/person/10> ?p ?v }', 'test/regression/hr_only.ttl');
+----
+http://example.com/ns#name	Ann
+http://example.com/ns#salary	52000
+http://example.com/ns#worksFor	http://data.example.com/company/1
+http://www.w3.org/1999/02/22-rdf-syntax-ns#type	http://example.com/ns#Employee
+
 # A key that does not hold gives duplicate rows: the setting is an assertion
 statement ok
 CREATE OR REPLACE VIEW emp AS SELECT * FROM emp_rows UNION ALL SELECT * FROM emp_rows WHERE id = 10;
