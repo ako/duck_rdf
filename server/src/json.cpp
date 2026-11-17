@@ -65,6 +65,24 @@ const Json *Json::Get(const std::string &key) const {
 	return nullptr;
 }
 
+Json *Json::GetMutable(const std::string &key) {
+	for (auto &member : members_) {
+		if (member.first == key) {
+			return &member.second;
+		}
+	}
+	return nullptr;
+}
+
+void Json::Remove(const std::string &key) {
+	for (auto it = members_.begin(); it != members_.end(); ++it) {
+		if (it->first == key) {
+			members_.erase(it);
+			return;
+		}
+	}
+}
+
 Json &Json::operator[](const std::string &key) {
 	if (type_ == Type::NUL) {
 		type_ = Type::OBJECT;

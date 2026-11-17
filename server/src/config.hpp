@@ -66,6 +66,9 @@ struct Config {
 	int odata_anonymous = -1;
 	int64_t odata_max_page = 1000;
 
+	// [iceberg]: a REST catalog over the data folder at /iceberg
+	bool iceberg_enabled = true;
+
 	// [mcp]
 	bool mcp_enabled = true;
 	int mcp_anonymous = -1;

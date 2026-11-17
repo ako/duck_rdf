@@ -77,6 +77,8 @@ public:
 	// Objects: Set replaces an existing key; Get returns nullptr when absent.
 	Json &Set(const std::string &key, Json value);
 	const Json *Get(const std::string &key) const;
+	Json *GetMutable(const std::string &key);
+	void Remove(const std::string &key);
 	Json &operator[](const std::string &key);
 	const std::vector<std::pair<std::string, Json>> &Members() const {
 		return members_;
@@ -84,7 +86,13 @@ public:
 
 	// Arrays.
 	void Push(Json value) {
+		if (type_ == Type::NUL) {
+			type_ = Type::ARRAY;
+		}
 		items_.push_back(std::move(value));
+	}
+	std::vector<Json> &MutableItems() {
+		return items_;
 	}
 	const std::vector<Json> &Items() const {
 		return items_;

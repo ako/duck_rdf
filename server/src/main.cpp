@@ -9,6 +9,7 @@
 // The same configuration file as the Docker image (server.example.toml) works here; flags override it.
 #include "api.hpp"
 #include "config.hpp"
+#include "iceberg_catalog.hpp"
 #include "json.hpp"
 #include "log.hpp"
 #include "mcp.hpp"
@@ -487,6 +488,13 @@ int main(int argc, char **argv) {
 			                     "Model Context Protocol over streamable HTTP, for agents." +
 			                         std::string(config.McpAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
 		}
+		IcebergCatalog catalog(config.data_dir);
+		if (config.iceberg_enabled) {
+			endpoints.push_back({"Iceberg", base + "/iceberg",
+			                     "Iceberg REST catalog over the data folder: read and write its Iceberg tables from "
+			                     "DuckDB (ATTACH '' AS lake (TYPE iceberg, ENDPOINT '" +
+			                         base + "/iceberg', TOKEN '...')), PyIceberg or Spark."});
+		}
 		Api api(db, config, config.timeout_seconds);
 		api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
 		bool serve_mcp = config.mcp_enabled && !config.mapping.empty();
@@ -502,6 +510,26 @@ int main(int argc, char **argv) {
 				res.set_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept");
 				res.status = 204;
 			});
+		}
+		if (config.iceberg_enabled) {
+			auto iceberg_handler = [&](const httplib::Request &req, httplib::Response &res) {
+				// Writes go to the data folder: the token is required wherever SPARQL needs it.
+				if (!config.SparqlAnonymous() && !Authorized(req, token)) {
+					res.status = 401;
+					res.set_content("{\"error\":{\"message\":\"send Authorization: Bearer <token>\",\"type\":"
+					                "\"NotAuthorizedException\",\"code\":401}}",
+					                "application/json");
+					return;
+				}
+				auto response = catalog.Handle(req.method, req.path.substr(std::string("/iceberg").size()), req.body);
+				res.status = response.status;
+				if (!response.body.empty()) {
+					res.set_content(response.body, "application/json");
+				}
+			};
+			http.Get(R"(/iceberg/.*)", iceberg_handler);
+			http.Post(R"(/iceberg/.*)", iceberg_handler);
+			http.Delete(R"(/iceberg/.*)", iceberg_handler);
 		}
 		if (serve_odata) {
 			auto odata_handler = [&](const httplib::Request &req, httplib::Response &res) {
@@ -622,6 +650,9 @@ int main(int argc, char **argv) {
 		if (serve_odata) {
 			Log("OData   " + base + "/odata" + (config.ODataAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
 			    " (" + std::to_string(odata.Sets().size()) + " entity sets)");
+		}
+		if (config.iceberg_enabled) {
+			Log("Iceberg " + base + "/iceberg  (REST catalog over the data folder)");
 		}
 		if (serve_mcp) {
 			Log("MCP     " + base + "/mcp" + (config.McpAnonymous() ? "" : "  (Authorization: Bearer <token>)") + " (" +

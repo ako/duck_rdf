@@ -95,6 +95,7 @@ void LoadConfigFile(const std::string &path, Config &config) {
 	Read(table, "sparql", "max_rows", config.sparql_max_rows);
 	Read(table, "sparql", "cors_origin", config.cors_origin);
 
+	Read(table, "iceberg", "enabled", config.iceberg_enabled);
 	Read(table, "odata", "enabled", config.odata_enabled);
 	ReadTri(table, "odata", "anonymous", config.odata_anonymous);
 	Read(table, "odata", "max_page_size", config.odata_max_page);
