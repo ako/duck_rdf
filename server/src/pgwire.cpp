@@ -994,9 +994,10 @@ std::shared_ptr<PgSession::Statement> PgSession::Prepare(const std::string &sql,
 	statement->special = Classify(sql);
 	statement->param_oids = std::move(param_oids);
 	if (statement->special.kind == Special::Kind::NONE) {
-		auto session_sql = ReplaceCatalogGaps(sql, database_, pid_);
-		auto rewritten = RewriteCatalogQuery(session_sql);
-		statement->prepared = con_->Prepare(rewritten ? *rewritten : session_sql);
+		// The JDBC driver's known metadata queries first, recognised by their original text; the
+		// PostgreSQL catalog gaps in anything else.
+		auto rewritten = RewriteCatalogQuery(sql);
+		statement->prepared = con_->Prepare(rewritten ? *rewritten : ReplaceCatalogGaps(sql, database_, pid_));
 		if (statement->prepared->HasError()) {
 			SendErrorFrom(statement->prepared->GetErrorObject());
 			return nullptr;
