@@ -499,7 +499,7 @@ struct R2RMLWriteBindData : public FunctionData {
 		c->ignore_non_fatal_errors = ignore_non_fatal_errors;
 		c->ignore_case = ignore_case;
 		c->col_index = col_index;
-		return c;
+		return std::move(c);
 	}
 	bool Equals(const FunctionData &other) const override {
 		return mapping_file_path == other.Cast<R2RMLWriteBindData>().mapping_file_path;
