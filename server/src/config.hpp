@@ -66,6 +66,19 @@ struct Config {
 	int odata_anonymous = -1;
 	int64_t odata_max_page = 1000;
 
+	// [iceberg]: a REST catalog over the data folder at /iceberg
+	bool iceberg_enabled = true;
+
+	// [kafka]: a Kafka-compatible endpoint for producers, writing each topic to an Iceberg table
+	// shaped like WarpStream Tableflow's
+	int kafka_port = 9092;             // 0: off
+	std::string kafka_advertised_host; // default: host
+	std::string kafka_cluster = "local";
+	int kafka_partitions = 1;
+	int kafka_flush_ms = 1000;
+	std::string tableflow_config; // a Tableflow YAML file
+	bool kafka_cdc = true;        // change events get a column per field, and a <table>_current view
+
 	// [mcp]
 	bool mcp_enabled = true;
 	int mcp_anonymous = -1;

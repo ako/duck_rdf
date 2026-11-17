@@ -157,7 +157,50 @@ std::string NewestIcebergVersion(const fs::path &metadata) {
 	return candidates.back();
 }
 
+// Folders under `dir` (itself included, two levels deep) that hold an Iceberg catalog namespace.
+void FindNamespaces(const fs::path &dir, int depth, std::vector<fs::path> &out) {
+	if (fs::exists(dir / ".iceberg-namespace")) {
+		out.push_back(dir);
+		return;
+	}
+	if (depth == 0) {
+		return;
+	}
+	std::error_code ec;
+	for (auto &entry : fs::directory_iterator(dir, ec)) {
+		if (entry.is_directory() && !fs::is_directory(entry.path() / "metadata")) {
+			FindNamespaces(entry.path(), depth - 1, out);
+		}
+	}
+}
+
 } // namespace
+
+std::string IcebergView(const std::string &folder) {
+	// With a version-hint (every table this server's catalog writes has one), iceberg_scan reads
+	// the newest snapshot on each query, so the view follows the table as it grows.
+	auto metadata = fs::path(folder) / "metadata";
+	auto version = fs::exists(metadata / "version-hint.text") ? std::string() : NewestIcebergVersion(metadata);
+	return "SELECT * FROM iceberg_scan(" + SqlLiteral(folder) +
+	       (version.empty() ? "" : ", version = " + SqlLiteral(version)) + ", allow_moved_paths = true)";
+}
+
+std::string ChangeEventCurrentView(duckdb::Connection &con, const std::string &view) {
+	auto found = Column(con, "SELECT count(*) FROM (DESCRIBE " + SqlIdent(view) +
+	                             ") WHERE (column_name = 'cdc' AND column_type LIKE 'STRUCT(op VARCHAR%') OR "
+	                             "column_name = 'warpstream'");
+	if (found.empty() || found[0] != "2") {
+		return "";
+	}
+	auto current = view + "_current";
+	// One partition holds every record of a key, so the highest offset is the latest change. A
+	// tombstone (no value) or a delete ends the key.
+	Exec(con, "CREATE OR REPLACE VIEW " + SqlIdent(current) + " AS SELECT * EXCLUDE (cdc, warpstream) FROM " +
+	              SqlIdent(view) +
+	              " QUALIFY row_number() OVER (PARTITION BY warpstream.\"key\" ORDER BY "
+	              "warpstream.\"offset\" DESC) = 1 AND coalesce(cdc.op, 'd') <> 'd'");
+	return current;
+}
 
 std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config) {
 	std::vector<Exposed> exposed;
@@ -195,6 +238,45 @@ std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config) {
 					              SqlLiteral(full) + (version.empty() ? "" : ", version = " + SqlLiteral(version)) +
 					              ", allow_moved_paths = true)");
 					exposed.push_back({"iceberg", IdentName(entry), full + (version.empty() ? "" : " @ " + version)});
+				} else if (fs::is_directory(path) && [&]() {
+					           std::vector<fs::path> found;
+					           FindNamespaces(path, 2, found);
+					           return !found.empty();
+				           }()) {
+					// Iceberg catalog namespaces (e.g. Kafka topics written as Tableflow tables): a view
+					// per table, named after the table.
+					std::vector<fs::path> namespaces;
+					FindNamespaces(path, 2, namespaces);
+					for (auto &ns : namespaces) {
+						std::vector<fs::path> tables;
+						for (auto &t : fs::directory_iterator(ns)) {
+							if (t.is_directory() && fs::is_directory(t.path() / "metadata")) {
+								tables.push_back(t.path());
+							}
+						}
+						std::sort(tables.begin(), tables.end());
+						for (auto &t : tables) {
+							auto table_full = fs::absolute(t).lexically_normal().string();
+							auto name = t.filename().string();
+							try {
+								if (!iceberg_loaded) {
+									Exec(con, "INSTALL iceberg");
+									Exec(con, "LOAD iceberg");
+									iceberg_loaded = true;
+								}
+								Exec(con,
+								     "CREATE OR REPLACE VIEW " + SqlIdent(name) + " AS " + IcebergView(table_full));
+								exposed.push_back({"iceberg", name, table_full});
+								auto current = ChangeEventCurrentView(con, name);
+								if (!current.empty()) {
+									exposed.push_back({"view", current, "latest state per key of " + name});
+								}
+							} catch (std::exception &ex) {
+								// A table created but never written has no snapshot to read yet.
+								Log("  skipped " + name + ": " + ex.what());
+							}
+						}
+					}
 				} else if (fs::is_directory(path)) {
 					auto kind = DirectoryKind(path);
 					if (kind.empty()) {

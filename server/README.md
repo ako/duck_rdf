@@ -10,6 +10,8 @@ Iceberg, SQLite and DuckDB files, and an R2RML/YARRRML mapping, and it serves
 | SPARQL | `http://127.0.0.1:9495/sparql` (SPARQL 1.1 Protocol) | RDF tools, REST calls from apps, the query page at `/` |
 | OData | `http://127.0.0.1:9495/odata` (OData v4, read-only) | Mendix external entities, any OData v4 client |
 | MCP | `http://127.0.0.1:9495/mcp` (streamable HTTP, JSON responses) | agents |
+| Kafka | `127.0.0.1:9092` (Kafka protocol, producers) | Mendix Business Events and entity CDC: topics become Iceberg tables |
+| Iceberg | `http://127.0.0.1:9495/iceberg` (Iceberg REST catalog) | DuckDB, PyIceberg, Spark: read and write the folder's Iceberg tables |
 
 It is DuckDB 2.0.0 with the rdf extension, Quack, httpfs, SQLite, Parquet and JSON compiled in. Iceberg
 is DuckDB's own extension, installed from DuckDB's repository the first time a folder holds an
@@ -44,6 +46,88 @@ On any other address a token is required, and SPARQL and MCP require it too (as
 
 By default SQL clients can read only the data, mapping, ontology and config folders and cannot
 change settings (`lock_down`).
+
+## Kafka in, Iceberg out (a local WarpStream + Tableflow)
+
+In production, the Mendix runtime publishes Business Events and entity-level CDC events (from its
+outbox) to a WarpStream agent, and WarpStream Tableflow writes the topics to Iceberg tables in the
+data lake. Locally, `duckgraphlake` stands in for both: point the app's Kafka setting at it (for
+Business Events, the `ServerUrl` constant: `localhost:9092`) and each topic becomes an Iceberg table in
+the data folder, queryable over SQL, SPARQL (with a mapping), OData and the web UI within a second.
+For entity CDC, set the configuration's Kafka bootstrap servers (the `Kafka.BootstrapServers` runtime
+setting) to the same address.
+
+```bash
+duckgraphlake ./data --tableflow tableflow.yaml
+```
+
+- **The protocol: producers only.**
+  - **Requests:** ApiVersions, Metadata (topics are created on first use), InitProducerId (idempotent
+    producers, the Java client's default), CreateTopics and Produce.
+  - **Record batches:** format v2, with no compression, gzip or zstd. snappy and lz4 are refused with
+    `UNSUPPORTED_COMPRESSION_TYPE`.
+  - **Not offered:** consuming (Fetch, consumer groups) and transactions.
+  - **Clients tested:** the Apache Kafka Java client 3.9 and librdkafka 2.x.
+- **Tables shaped like Tableflow's.** `--tableflow` reads a WarpStream Tableflow YAML file. For each of
+  its `tables`, the subset it uses is:
+  - `source_cluster_name`, `source_topic` and `name`;
+  - `source_format: json` and `schema_mode: inline`, with an `input_schema` (JSON Schema);
+  - `field_type_remapping` and `skip_raw_record_values`.
+
+  Other settings (`partitioning_scheme`, `transforms`, `dlq_mode`, ...) are reported at start-up and
+  not applied. A topic's table:
+  - **Name:** `<cluster>__<topic>`, or the configured `name`.
+  - **Location:** `<data>/warpstream/_tableflow/<table>/`, in the Iceberg catalog namespace `tableflow`.
+  - **Columns:** one for each property of the JSON Schema, parsed from the record's JSON value:
+    - `integer` → BIGINT, `number` → DOUBLE, `boolean` → BOOLEAN;
+    - `string` → VARCHAR, or DATE, TIMESTAMPTZ, TIME or UUID by `format`;
+    - objects → STRUCT (MAP with `additionalProperties`), arrays → LIST.
+  - **Metadata:** a `warpstream` STRUCT(partition, offset, key, value, timestamp, headers). `headers`
+    is a MAP(VARCHAR, VARCHAR) of the record's headers: for a Mendix business event,
+    `warpstream.headers['ce_type']` is the event's type (its message name) and `ce_subject` its
+    subject. A repeated header keeps its last value; a value that is not UTF-8 is NULL. Tableflow's
+    struct has no `headers` field; tables written before it was added keep their shape.
+  - **Unconfigured topics:** only the `warpstream` struct.
+  - **Unparseable records:** a record that is not JSON, or not of the schema's shape, keeps NULL
+    fields and its raw `warpstream.value`. That's like Tableflow's `dlq_mode: keep`; its default stops
+    instead.
+- **Change events get a column per field.** A topic of change events (the Debezium envelope as Kafka
+  Connect's JSON converter writes it, schema embedded: `{"schema": ..., "payload": {"before", "after",
+  "op", "ts_ms", "source"}}`) that the Tableflow file does not configure is unwrapped. Mendix's entity
+  CDC publishes exactly this, one topic per entity (`cdc.<app>.<entity>.<major revision>.<space>`), so
+  each entity gets a table such as `local__cdc.TestApp.Order.1.local`:
+  - **Columns:** the entity's fields from the record's own schema: `id` (the Mendix object id), the
+    attributes, and each association as a list of object ids. `int*` → TINYINT..BIGINT, `float*` →
+    FLOAT/DOUBLE, `boolean`, `string` → VARCHAR, Decimal → DECIMAL(p, s), Timestamp → TIMESTAMP, Date
+    → DATE, arrays → LIST, structs → STRUCT. A delete's row holds the values from `before`.
+  - **`cdc`:** STRUCT(op, ts, source_ts, tx_id, sequence, snapshot, connector, version); `op` is `c`, `u`,
+    `d`, or `r` for a snapshot read.
+  - **New attributes:** a later minor revision of a CDC service that adds an attribute adds a column.
+  - **`<table>_current`:** a view with the latest row per record key (the object id), deleted objects
+    left out: the entity's current state.
+  - `[kafka] cdc = false` (or `--no-kafka-cdc`) keeps change events as raw values only.
+- **Durable, then committed.**
+  - **Acknowledgement:** a produce is acknowledged once its records are in a buffer file
+    (`<data>/.duckgraphlake/kafka.duckdb`).
+  - **Commit:** every `[kafka] flush_ms` (1000), each topic's buffered records are committed to its
+    table as one Iceberg snapshot.
+  - **Crashes and restarts:** a crash loses nothing that was acknowledged, and offsets carry on after a
+    restart.
+  - **The data folder:** nothing is written to it until the first topic.
+- **The tables are plain Iceberg.**
+  - **Writing:** a second, internal DuckDB commits them through the server's own Iceberg REST catalog
+    (`/iceberg`), which DuckDB, PyIceberg and Spark can also use to read and write the folder:
+    `ATTACH '' AS lake (TYPE iceberg, ENDPOINT 'http://127.0.0.1:9495/iceberg', TOKEN 'duckgraphlake')`.
+  - **Reading without the catalog:** each commit also updates `metadata/version-hint.text`, so
+    `iceberg_scan('<folder>')` reads the newest snapshot.
+
+Settings (`[kafka]` in the config file): `port` (9092; `--kafka-port 0` turns it off),
+`advertised_host`, `cluster` (`local`), `partitions` (1), `flush_ms` (1000), `tableflow`, `cdc` (true).
+
+Not verified against WarpStream itself: the `warpstream` struct's field types (from WarpStream's
+documentation), what Tableflow does with JSON properties outside the schema (here: ignored), and how
+Mendix's own Iceberg bridge lays out CDC tables (the unwrapped shape above is this server's own). The
+CDC message format was checked against a Mendix 11.16.1 runtime.
 
 ## Web UI
 
@@ -162,6 +246,9 @@ Tests (both need a DuckGraphLake checkout, for its fixture):
 - `DUCKGRAPHLAKE=<checkout> server/test/odata_test.sh` runs `server/test/odata/ODataTest.java`
   through Apache Olingo's OData v4 client: the metadata model, queries, keys, navigation and
   `$expand`. Needs Java and Maven.
+- `server/test/kafka_test.sh` produces with the Kafka Java client (and librdkafka, when Python's
+  `confluent-kafka` is installed) and checks the tables, change events and headers, a restart and a crash. It needs Java and
+  Maven, but no DuckGraphLake checkout.
 - `DUCKGRAPHLAKE=<checkout> server/test/pg_test.sh` runs `server/test/pgjdbc/PgJdbcTest.java`
   through the PostgreSQL JDBC driver: metadata, parameterized queries (repeated, so the driver
   switches to server-side prepared statements and binary transfer), typed parameters,

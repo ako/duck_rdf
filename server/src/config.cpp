@@ -95,6 +95,23 @@ void LoadConfigFile(const std::string &path, Config &config) {
 	Read(table, "sparql", "max_rows", config.sparql_max_rows);
 	Read(table, "sparql", "cors_origin", config.cors_origin);
 
+	Read(table, "iceberg", "enabled", config.iceberg_enabled);
+	if (auto p = table["kafka"]["port"].value<int64_t>()) {
+		config.kafka_port = static_cast<int>(*p);
+	}
+	Read(table, "kafka", "advertised_host", config.kafka_advertised_host);
+	Read(table, "kafka", "cluster", config.kafka_cluster);
+	if (auto p = table["kafka"]["partitions"].value<int64_t>()) {
+		config.kafka_partitions = static_cast<int>(*p);
+	}
+	if (auto p = table["kafka"]["flush_ms"].value<int64_t>()) {
+		config.kafka_flush_ms = static_cast<int>(*p);
+	}
+	Read(table, "kafka", "tableflow", config.tableflow_config);
+	if (auto b = table["kafka"]["cdc"].value<bool>()) {
+		config.kafka_cdc = *b;
+	}
+	config.tableflow_config = ResolvePath(config, config.tableflow_config);
 	Read(table, "odata", "enabled", config.odata_enabled);
 	ReadTri(table, "odata", "anonymous", config.odata_anonymous);
 	Read(table, "odata", "max_page_size", config.odata_max_page);
