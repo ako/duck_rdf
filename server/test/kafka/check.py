@@ -23,10 +23,11 @@ orders = sql('SELECT count(*), count(DISTINCT warpstream."offset"), min(warpstre
              'count(id) FROM "local__orders"')[0]
 if phase == "first":
     check("every acknowledged record is in the table, offsets 0..1001 without gaps", orders == [1002, 1002, 0, 1001, 1000], orders)
-    row = sql('SELECT id, customer, amount, placed::VARCHAR, lines[1].qty, warpstream."partition", decode(warpstream."key") '
-              'FROM "local__orders" WHERE warpstream."offset" = 7')[0]
+    # placed is a TIMESTAMPTZ, which ::VARCHAR shows in the server's time zone: compare it in UTC.
+    row = sql('SELECT id, customer, amount, (placed AT TIME ZONE \'UTC\')::VARCHAR, lines[1].qty, warpstream."partition", '
+              'decode(warpstream."key") FROM "local__orders" WHERE warpstream."offset" = 7')[0]
     check("JSON fields as typed columns (integer, string, number, date-time, nested list)",
-          row == [7, "c0", 8.75, "2026-11-17 10:00:07+00", 2, 0, "order-7"], row)
+          row == [7, "c0", 8.75, "2026-11-17 10:00:07", 2, 0, "order-7"], row)
     bad = sql('SELECT id, customer, decode(warpstream."value") FROM "local__orders" WHERE warpstream."offset" IN (1000, 1001) '
               'ORDER BY warpstream."offset"')
     check("a record that is not JSON, or not of the schema's shape, is kept with its raw value",
