@@ -9,7 +9,7 @@ Iceberg, SQLite and DuckDB files, and an R2RML/YARRRML mapping, and it serves
 | SPARQL | `http://127.0.0.1:9495/sparql` (SPARQL 1.1 Protocol) | RDF tools, REST calls from apps, the query page at `/` |
 | MCP | `http://127.0.0.1:9495/mcp` (streamable HTTP, JSON responses) | agents |
 
-It is DuckDB 2.0.0 with the rdf extension, Quack, SQLite, Parquet and JSON compiled in. Iceberg
+It is DuckDB 2.0.0 with the rdf extension, Quack, httpfs, SQLite, Parquet and JSON compiled in. Iceberg
 is DuckDB's own extension, installed from DuckDB's repository the first time a folder holds an
 Iceberg table. It is the same server as the Docker image in DuckGraphLake (`server/`), without
 TLS: it is meant for a developer's machine.
@@ -74,11 +74,20 @@ Tools: `list_classes`, `describe_class`, `find_entity`, `describe_entity`, `spar
 ## Build
 
 ```bash
-GEN=ninja EXT_FLAGS="-DRDF_BUILD_SERVER=ON" \
-  EXTRA_EXTENSION_CONFIGS="$PWD/server/extension_config.cmake" make release
-./build/release/duckgraphlake --help
+server/build.sh          # build/server/extension/rdf/duckgraphlake
 ```
 
 The same prerequisites as the extension (see the root README). `server/extension_config.cmake`
-adds Quack and SQLite (fetched from their DuckDB repositories at the commits DuckDB 2.0.0 pins);
-the server itself fetches cpp-httplib and toml++.
+compiles in httpfs, Quack and SQLite (fetched from their DuckDB repositories at the commits
+DuckDB 2.0.0 pins); the server itself fetches cpp-httplib and toml++. A first build takes
+about an hour on 4 cores.
+
+Test: `DUCKGRAPHLAKE=<DuckGraphLake checkout> server/test/smoke_test.sh` runs the Docker
+image's SQL, SPARQL and MCP test clients against the binary.
+
+## Known limitations
+
+- **No query parameters over SQL.** Quack (DuckDB 2.0.0) does not forward bound parameters:
+  `SELECT ... WHERE id = ?` fails with "Values were not provided for the following parameters".
+  Queries without parameters, including `sparql('...')`, work from every client, JDBC included.
+- No TLS, no hot reload of the mapping or the data folder yet: restart after changing them.

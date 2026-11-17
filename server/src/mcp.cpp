@@ -100,7 +100,8 @@ Json Value(const std::optional<Term> &b) {
 	if (b->kind == Term::Kind::BNODE) {
 		return Json("_:" + b->value);
 	}
-	static const std::set<std::string> integers {"integer", "int",  "long", "short", "byte", "nonNegativeInteger",
+	static const std::set<std::string> integers {"integer",         "int",         "long",
+	                                             "short",           "byte",        "nonNegativeInteger",
 	                                             "positiveInteger", "unsignedInt", "unsignedLong"};
 	auto &dt = b->datatype;
 	if (dt.rfind(XSD, 0) == 0) {
@@ -278,8 +279,8 @@ const std::map<std::string, McpServer::OntologyEntry> &McpServer::Ontology() {
 			list += (list.empty() ? "" : ", ") + SqlLiteral(f);
 		}
 		duckdb::Connection con(db_);
-		auto result = con.Query("SELECT subject, predicate, object FROM read_rdf([" + list +
-		                        "], prefix_expansion = true)");
+		auto result =
+		    con.Query("SELECT subject, predicate, object FROM read_rdf([" + list + "], prefix_expansion = true)");
 		if (result->HasError()) {
 			throw ToolError("reading the ontology: " + result->GetError());
 		}
@@ -317,8 +318,8 @@ const std::vector<std::pair<std::string, int64_t>> &McpServer::ClassCounts() {
 			return counts_;
 		}
 	}
-	auto r = Run("SELECT ?c (COUNT(DISTINCT ?x) AS ?n) WHERE { ?x a ?c } GROUP BY ?c ORDER BY ?c",
-	             config_.mcp_max_rows);
+	auto r =
+	    Run("SELECT ?c (COUNT(DISTINCT ?x) AS ?n) WHERE { ?x a ?c } GROUP BY ?c ORDER BY ?c", config_.mcp_max_rows);
 	std::vector<std::pair<std::string, int64_t>> counts;
 	for (auto &row : r.Get("rows")->Items()) {
 		auto c = row.Items()[0].AsString();
@@ -510,8 +511,10 @@ Json McpServer::FindEntity(const std::string &raw, const std::string &cls, int64
 	auto wanted = LowerAscii(text);
 	auto needle = "\"" + EscapeLiteral(wanted) + "\"";
 	auto typed = cls.empty() ? "" : "?x a <" + ResolveClass(cls) + "> . ";
-	auto r = Run("SELECT DISTINCT ?x ?p ?text WHERE { " + typed + "?x ?p ?text FILTER(isLiteral(?text) && "
-	             "CONTAINS(LCASE(STR(?text)), " + needle + ")) } ORDER BY ?x",
+	auto r = Run("SELECT DISTINCT ?x ?p ?text WHERE { " + typed +
+	                 "?x ?p ?text FILTER(isLiteral(?text) && "
+	                 "CONTAINS(LCASE(STR(?text)), " +
+	                 needle + ")) } ORDER BY ?x",
 	             limit);
 	std::vector<Json> exact, other;
 	std::vector<std::string> entities;
@@ -605,7 +608,8 @@ Json McpServer::Template(const QueryTemplate &tmpl, const Json &args) {
 				}
 				rendered = s;
 			} else {
-				rendered = (v->GetType() == Json::Type::BOOL ? v->AsBool() : v->AsString() == "true") ? "true" : "false";
+				rendered =
+				    (v->GetType() == Json::Type::BOOL ? v->AsBool() : v->AsString() == "true") ? "true" : "false";
 			}
 		} catch (std::exception &ex) {
 			throw ToolError(p.name + ": " + ex.what());
@@ -633,13 +637,14 @@ Json McpServer::ToolList() const {
 	                "its values when there are only a few (a status or a country code). class_iri is a full IRI or a "
 	                "bare name such as Employee.",
 	                Schema({{"class_iri", "string", ""}}, {"class_iri"})));
-	tools.Push(Tool("find_entity",
-	                "Entities with a text value containing `text` (case-insensitive), optionally only instances of "
-	                "class_iri. Use it to turn a name into an IRI. Matches whose whole text equals `text` come first, "
-	                "marked \"exact\": true; the rest only contain it (\"Customer 4242\" also finds \"Customer 42420\"). "
-	                "Each match lists the entity's classes, inferred ones included, to tell apart a product and an "
-	                "order line with the same name.",
-	                Schema({{"text", "string", ""}, {"class_iri", "string", ""}, {"limit", "integer", ""}}, {"text"})));
+	tools.Push(
+	    Tool("find_entity",
+	         "Entities with a text value containing `text` (case-insensitive), optionally only instances of "
+	         "class_iri. Use it to turn a name into an IRI. Matches whose whole text equals `text` come first, "
+	         "marked \"exact\": true; the rest only contain it (\"Customer 4242\" also finds \"Customer 42420\"). "
+	         "Each match lists the entity's classes, inferred ones included, to tell apart a product and an "
+	         "order line with the same name.",
+	         Schema({{"text", "string", ""}, {"class_iri", "string", ""}, {"limit", "integer", ""}}, {"text"})));
 	tools.Push(Tool("describe_entity",
 	                "Everything stated about one entity: its properties and values, and which entities refer to it.",
 	                Schema({{"entity_iri", "string", ""}, {"limit", "integer", ""}}, {"entity_iri"})));

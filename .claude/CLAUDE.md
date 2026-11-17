@@ -162,6 +162,10 @@ State (whether enabled, and which mapping path) lives in a `SparqlParserState` s
 
 `src/read_rdf_prefixes.cpp` implements `read_rdf_prefixes`, returning `prefix`, `uri`, `is_base` (+ optional `filename`) rows from Turtle/TriG files. It errors for NTriples/NQuads/RDF-XML, which have no prefix declarations.
 
+### The duckgraphlake server binary
+
+`server/` builds `duckgraphlake`, one executable serving a data folder over SQL (Quack), SPARQL 1.1 Protocol (`/sparql`) and MCP (`/mcp`): a C++ port of DuckGraphLake's Docker server. It is only built with `-DRDF_BUILD_SERVER=ON` and `server/extension_config.cmake` (which loads *and* statically links httpfs, Quack and SQLite: DuckDB 2.0 links only extensions named in `duckdb_extension_statically_link`); `server/build.sh` does both into `build/server/`. The binary must call `ExtensionHelper::LoadAllExtensions` before use. Test with `server/test/smoke_test.sh` (needs a DuckGraphLake checkout for its clients). See `server/README.md`.
+
 ### Not part of the build
 
 `src/CMakeLists-BufferTestHarness.txt` is a standalone ASAN development harness for SerdBuffer. It is not referenced by the extension build — ignore it unless specifically working on that harness.

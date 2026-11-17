@@ -20,7 +20,8 @@ public:
 	}
 	Json(bool b) : type_(Type::BOOL), bool_(b) {
 	}
-	template <class T, typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, bool>::value, int>::type = 0>
+	template <class T,
+	          typename std::enable_if<std::is_integral<T>::value && !std::is_same<T, bool>::value, int>::type = 0>
 	Json(T i) : type_(Type::INT), int_(static_cast<int64_t>(i)) {
 	}
 	Json(double d) : type_(Type::DOUBLE), double_(d) {

@@ -405,7 +405,9 @@ std::string WriteSelect(const std::string &format, const SparqlResult &result) {
 				first = false;
 				JsonString(result.variables[i], out);
 				out += ":{\"type\":";
-				out += b->kind == Term::Kind::IRI ? "\"uri\"" : b->kind == Term::Kind::BNODE ? "\"bnode\"" : "\"literal\"";
+				out += b->kind == Term::Kind::IRI     ? "\"uri\""
+				       : b->kind == Term::Kind::BNODE ? "\"bnode\""
+				                                      : "\"literal\"";
 				out += ",\"value\":";
 				JsonString(b->value, out);
 				if (!b->lang.empty()) {

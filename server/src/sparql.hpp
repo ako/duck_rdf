@@ -34,8 +34,8 @@ struct SparqlResult {
 	Kind kind = Kind::SELECT;
 	std::vector<std::string> variables;
 	std::vector<std::vector<std::optional<Term>>> rows; // SELECT; nullopt is unbound
-	bool boolean = false;                                // ASK
-	std::vector<Triple> triples;                         // CONSTRUCT
+	bool boolean = false;                               // ASK
+	std::vector<Triple> triples;                        // CONSTRUCT
 	bool truncated = false;
 };
 

@@ -13,6 +13,7 @@
 #include "sparql.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/main/extension_helper.hpp"
 #include "httplib.h"
 
 #include <csignal>
@@ -51,6 +52,7 @@ Usage: duckgraphlake [options] [DATA_DIR]
       --http-port PORT   SPARQL (/sparql), MCP (/mcp) and a query page (/) (default 9495)
       --sql-port PORT    DuckDB Quack protocol (default 9494)
       --token TOKEN      access token (or DUCKGRAPHLAKE_TOKEN); required unless on a loopback address
+      --require-token    SPARQL and MCP also need the token on a loopback address
       --no-lock-down     leave file access and settings open to SQL clients
   -h, --help             this text
   -v, --version          the version
@@ -143,9 +145,12 @@ void HandleSparql(const Config &config, const SparqlExecutor &executor, const st
 		                " rows; add a LIMIT or narrow the query");
 	}
 	static const std::vector<std::pair<std::string, std::string>> select_types {
-	    {"application/sparql-results+json", "json"}, {"application/json", "json"},
-	    {"application/sparql-results+xml", "xml"},   {"application/xml", "xml"},
-	    {"text/csv", "csv"},                         {"text/tab-separated-values", "tsv"}};
+	    {"application/sparql-results+json", "json"},
+	    {"application/json", "json"},
+	    {"application/sparql-results+xml", "xml"},
+	    {"application/xml", "xml"},
+	    {"text/csv", "csv"},
+	    {"text/tab-separated-values", "tsv"}};
 	static const std::vector<std::string> graph_types {"text/turtle", "application/n-triples", "text/plain",
 	                                                   "application/rdf+xml"};
 	std::vector<std::string> select_offered;
@@ -171,8 +176,9 @@ void HandleSparql(const Config &config, const SparqlExecutor &executor, const st
 	}
 	auto ctype = Negotiate(accept, select_offered, "application/sparql-results+json");
 	if (ctype.empty()) {
-		return Text(res, 406, "results: application/sparql-results+json, application/sparql-results+xml, text/csv, "
-		                      "text/tab-separated-values");
+		return Text(res, 406,
+		            "results: application/sparql-results+json, application/sparql-results+xml, text/csv, "
+		            "text/tab-separated-values");
 	}
 	std::string format;
 	for (auto &t : select_types) {
@@ -250,7 +256,7 @@ int main(int argc, char **argv) {
 	Config config;
 	std::string data_dir_arg, mapping_arg, ontology_arg, host_arg, token_arg;
 	int http_port = 0, sql_port = 0;
-	bool no_lock_down = false;
+	bool no_lock_down = false, require_token = false;
 	try {
 		std::string config_file;
 		for (int i = 1; i < argc; i++) {
@@ -276,6 +282,8 @@ int main(int argc, char **argv) {
 				sql_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "--token") {
 				token_arg = NeedValue(i, argc, argv);
+			} else if (a == "--require-token") {
+				require_token = true;
 			} else if (a == "--no-lock-down") {
 				no_lock_down = true;
 			} else if (!a.empty() && a[0] == '-') {
@@ -314,6 +322,10 @@ int main(int argc, char **argv) {
 	if (no_lock_down) {
 		config.lock_down = false;
 	}
+	if (require_token) {
+		config.sparql_anonymous = 0;
+		config.mcp_anonymous = 0;
+	}
 	std::string token = token_arg;
 	if (token.empty() && std::getenv("DUCKGRAPHLAKE_TOKEN")) {
 		token = std::getenv("DUCKGRAPHLAKE_TOKEN");
@@ -351,6 +363,8 @@ int main(int argc, char **argv) {
 			db_config.SetOptionByName("temp_directory", duckdb::Value(config.temp_directory));
 		}
 		duckdb::DuckDB db(nullptr, &db_config);
+		// The extensions compiled into this binary: rdf, Quack, SQLite, Parquet, JSON, ...
+		duckdb::ExtensionHelper::LoadAllExtensions(db);
 		duckdb::Connection con(db);
 
 		Log("serving " + config.data_dir);
@@ -428,8 +442,9 @@ int main(int argc, char **argv) {
 			if (serve_sparql) {
 				res.set_content(QueryPage(config), "text/html; charset=utf-8");
 			} else {
-				Text(res, 200, "duckgraphlake: SQL on port " + std::to_string(config.sql_port) +
-				                   "; start with --mapping for SPARQL and MCP");
+				Text(res, 200,
+				     "duckgraphlake: SQL on port " + std::to_string(config.sql_port) +
+				         "; start with --mapping for SPARQL and MCP");
 			}
 		});
 		http.set_error_handler([](const httplib::Request &, httplib::Response &res) {
@@ -452,8 +467,8 @@ int main(int argc, char **argv) {
 			    "; a query page at " + base + "/");
 		}
 		if (serve_mcp) {
-			Log("MCP     " + base + "/mcp" + (config.McpAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
-			    " (" + std::to_string(config.templates.size()) + " template tool(s))");
+			Log("MCP     " + base + "/mcp" + (config.McpAnonymous() ? "" : "  (Authorization: Bearer <token>)") + " (" +
+			    std::to_string(config.templates.size()) + " template tool(s))");
 		}
 		http.listen_after_bind();
 		Log("stopping");
