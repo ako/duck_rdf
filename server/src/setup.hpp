@@ -23,6 +23,9 @@ std::vector<std::string> Column(duckdb::Connection &con, const std::string &sql)
 // Files matching a glob (DuckDB's glob()), sorted.
 std::vector<std::string> GlobFiles(duckdb::Connection &con, const std::string &pattern);
 
+// The SELECT a view over an Iceberg table folder uses.
+std::string IcebergView(const std::string &folder);
+
 std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config);
 void ConfigureSparql(duckdb::Connection &con, const Config &config);
 // Unique, non-null template columns of the exposed tables, as sparql_unique_keys entries.

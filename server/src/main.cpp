@@ -9,6 +9,9 @@
 // The same configuration file as the Docker image (server.example.toml) works here; flags override it.
 #include "api.hpp"
 #include "config.hpp"
+#include "iceberg_catalog.hpp"
+#include "kafka.hpp"
+#include "kafka_lake.hpp"
 #include "json.hpp"
 #include "log.hpp"
 #include "mcp.hpp"
@@ -61,6 +64,9 @@ Usage: duckgraphlake [options] [DATA_DIR]
       --http-port PORT   SPARQL (/sparql), OData (/odata), MCP (/mcp) and a query page (/) (default 9495)
       --pg-port PORT     PostgreSQL wire protocol (default 5433; 0 turns it off)
       --sql-port PORT    DuckDB Quack protocol (default 9494)
+      --kafka-port PORT  Kafka-compatible endpoint for producers (default 9092; 0 turns it off): each
+                         topic is written to an Iceberg table under warpstream/_tableflow/
+  -t, --tableflow FILE   a WarpStream Tableflow YAML file: table names and JSON schemas per topic
       --token TOKEN      access token (or DUCKGRAPHLAKE_TOKEN); required unless on a loopback address
       --require-token    SPARQL and MCP also need the token on a loopback address
       --no-lock-down     leave file access and settings open to SQL clients
@@ -265,7 +271,8 @@ copyEndpointOnNewTab: true});</script>
 int main(int argc, char **argv) {
 	Config config;
 	std::string data_dir_arg, mapping_arg, ontology_arg, host_arg, token_arg, init_arg;
-	int http_port = 0, sql_port = 0, pg_port = -1;
+	int http_port = 0, sql_port = 0, pg_port = -1, kafka_port = -1;
+	std::string tableflow_arg;
 	bool no_lock_down = false, require_token = false;
 	try {
 		std::string config_file;
@@ -292,6 +299,10 @@ int main(int argc, char **argv) {
 				http_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "--pg-port") {
 				pg_port = std::stoi(NeedValue(i, argc, argv));
+			} else if (a == "--kafka-port") {
+				kafka_port = std::stoi(NeedValue(i, argc, argv));
+			} else if (a == "-t" || a == "--tableflow") {
+				tableflow_arg = NeedValue(i, argc, argv);
 			} else if (a == "--sql-port") {
 				sql_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "--token") {
@@ -338,6 +349,17 @@ int main(int argc, char **argv) {
 	}
 	if (pg_port >= 0) {
 		config.pg_port = pg_port;
+	}
+	if (kafka_port >= 0) {
+		config.kafka_port = kafka_port;
+	}
+	if (!tableflow_arg.empty()) {
+		config.tableflow_config = tableflow_arg;
+	}
+	if (config.kafka_port && !config.iceberg_enabled) {
+		std::cerr << "duckgraphlake: the Kafka endpoint writes through the Iceberg catalog; enable [iceberg]"
+		          << std::endl;
+		return 2;
 	}
 	if (no_lock_down) {
 		config.lock_down = false;
@@ -429,6 +451,11 @@ int main(int argc, char **argv) {
 		}
 		auto ontology_files = GlobFiles(con, config.ontology);
 		Log("ontology: " + (config.ontology.empty() ? std::string("(none)") : config.ontology));
+		if (config.kafka_port) {
+			// Topic tables are read through iceberg_scan views, created after lock-down as topics appear.
+			Exec(con, "INSTALL iceberg");
+			Exec(con, "LOAD iceberg");
+		}
 		if (config.lock_down) {
 			LockDown(con, config);
 		}
@@ -487,8 +514,62 @@ int main(int argc, char **argv) {
 			                     "Model Context Protocol over streamable HTTP, for agents." +
 			                         std::string(config.McpAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
 		}
+		IcebergCatalog catalog(config.data_dir);
+		if (config.iceberg_enabled) {
+			endpoints.push_back({"Iceberg", base + "/iceberg",
+			                     "Iceberg REST catalog over the data folder: read and write its Iceberg tables from "
+			                     "DuckDB (ATTACH '' AS lake (TYPE iceberg, ENDPOINT '" +
+			                         base + "/iceberg', TOKEN '...')), PyIceberg or Spark."});
+		}
+		std::unique_ptr<KafkaLake> lake;
+		std::unique_ptr<KafkaServer> kafka;
+		auto advertised = config.kafka_advertised_host.empty() ? config.host : config.kafka_advertised_host;
+		if (config.kafka_port) {
+			endpoints.push_back(
+			    {"Kafka", advertised + ":" + std::to_string(config.kafka_port),
+			     "Kafka-compatible, for producers (Mendix Business Events: ServerUrl). Each topic "
+			     "becomes an Iceberg table <cluster>__<topic> under warpstream/_tableflow/, shaped like "
+			     "WarpStream Tableflow's; committed every " +
+			         std::to_string(config.kafka_flush_ms) + " ms."});
+		}
 		Api api(db, config, config.timeout_seconds);
 		api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
+		std::mutex exposed_mutex;
+		if (config.kafka_port) {
+			KafkaLakeOptions options;
+			options.data_dir = config.data_dir;
+			options.catalog_url = "http://127.0.0.1:" + std::to_string(config.http_port) + "/iceberg";
+			options.token = token;
+			options.cluster = config.kafka_cluster;
+			options.default_partitions = config.kafka_partitions;
+			options.flush_ms = config.kafka_flush_ms;
+			if (!config.tableflow_config.empty()) {
+				options.tableflow = LoadTableflowConfig(config.tableflow_config);
+				Log("tableflow: " + config.tableflow_config + " (" + std::to_string(options.tableflow.tables.size()) +
+				    " table(s))");
+				for (auto &note : options.tableflow.notes) {
+					Log("  " + note);
+				}
+			}
+			catalog.AddAlias("tableflow", "warpstream/_tableflow");
+			lake =
+			    std::make_unique<KafkaLake>(options, catalog, [&](const std::string &table, const std::string &folder) {
+				    // A topic's first commit: a view over its table in the served database.
+				    try {
+					    duckdb::Connection view_con(db);
+					    Exec(view_con, "CREATE OR REPLACE VIEW " + SqlIdent(table) + " AS " + IcebergView(folder));
+					    std::lock_guard<std::mutex> lock(exposed_mutex);
+					    exposed.push_back({"iceberg", table, folder});
+					    api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
+					    Log("kafka: table " + table + " is queryable");
+				    } catch (std::exception &ex) {
+					    Log("kafka: no view for " + table + ": " + duckdb::ErrorData(ex).RawMessage());
+				    }
+			    });
+			lake->Start();
+			kafka = std::make_unique<KafkaServer>(*lake, advertised, config.kafka_port);
+			kafka->Start(config.host, config.kafka_port);
+		}
 		bool serve_mcp = config.mcp_enabled && !config.mapping.empty();
 		if (serve_sparql) {
 			auto handler = [&](const httplib::Request &req, httplib::Response &res) {
@@ -502,6 +583,26 @@ int main(int argc, char **argv) {
 				res.set_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept");
 				res.status = 204;
 			});
+		}
+		if (config.iceberg_enabled) {
+			auto iceberg_handler = [&](const httplib::Request &req, httplib::Response &res) {
+				// Writes go to the data folder: the token is required wherever SPARQL needs it.
+				if (!config.SparqlAnonymous() && !Authorized(req, token)) {
+					res.status = 401;
+					res.set_content("{\"error\":{\"message\":\"send Authorization: Bearer <token>\",\"type\":"
+					                "\"NotAuthorizedException\",\"code\":401}}",
+					                "application/json");
+					return;
+				}
+				auto response = catalog.Handle(req.method, req.path.substr(std::string("/iceberg").size()), req.body);
+				res.status = response.status;
+				if (!response.body.empty()) {
+					res.set_content(response.body, "application/json");
+				}
+			};
+			http.Get(R"(/iceberg/.*)", iceberg_handler);
+			http.Post(R"(/iceberg/.*)", iceberg_handler);
+			http.Delete(R"(/iceberg/.*)", iceberg_handler);
 		}
 		if (serve_odata) {
 			auto odata_handler = [&](const httplib::Request &req, httplib::Response &res) {
@@ -623,6 +724,13 @@ int main(int argc, char **argv) {
 			Log("OData   " + base + "/odata" + (config.ODataAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
 			    " (" + std::to_string(odata.Sets().size()) + " entity sets)");
 		}
+		if (kafka) {
+			Log("Kafka   " + advertised + ":" + std::to_string(config.kafka_port) +
+			    "  (producers; topics -> Iceberg tables in warpstream/_tableflow/)");
+		}
+		if (config.iceberg_enabled) {
+			Log("Iceberg " + base + "/iceberg  (REST catalog over the data folder)");
+		}
 		if (serve_mcp) {
 			Log("MCP     " + base + "/mcp" + (config.McpAnonymous() ? "" : "  (Authorization: Bearer <token>)") + " (" +
 			    std::to_string(config.templates.size()) + " template tool(s))");
@@ -630,6 +738,12 @@ int main(int argc, char **argv) {
 		Log("Web UI  " + base + "/  (catalog, queries, connection details)");
 		http.listen_after_bind();
 		Log("stopping");
+		if (kafka) {
+			kafka->Stop();
+		}
+		if (lake) {
+			lake->Stop();
+		}
 	} catch (std::exception &ex) {
 		duckdb::ErrorData error(ex);
 		Log("error: " + error.RawMessage());

@@ -16,6 +16,7 @@
 
 #include "duckdb.hpp"
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -35,7 +36,8 @@ public:
 	void Build(const std::vector<Exposed> &exposed, const ODataService *odata,
 	           const std::vector<std::string> &ontology_files, const std::vector<ApiEndpoint> &endpoints);
 
-	const Json &Catalog() const {
+	Json Catalog() const {
+		std::lock_guard<std::mutex> lock(mutex_);
 		return catalog_;
 	}
 	// Throws std::runtime_error with DuckDB's message.
@@ -48,6 +50,7 @@ private:
 	duckdb::DuckDB &db_;
 	const Config &config_;
 	double timeout_;
+	mutable std::mutex mutex_;
 	Json catalog_;
 	std::vector<std::string> own_objects_; // tables and views a preview may read
 };
