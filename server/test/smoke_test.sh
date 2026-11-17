@@ -8,7 +8,7 @@ LOG=$(mktemp)
 cd "$TEST"
 python3 make_data.py fixture >/dev/null
 "$BIN" fixture/data -c fixture/config/server.toml -m "$TEST/fixture/config/mapping/*.ttl" \
-  -o "$TEST/fixture/config/ontology/*.ttl" --sql-port 19494 --http-port 19495 \
+  -o "$TEST/fixture/config/ontology/*.ttl" --pg-port 0 --sql-port 19494 --http-port 19495 \
   --token smoke-test-token --require-token >"$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -f "$LOG"' EXIT
@@ -17,7 +17,9 @@ cat "$LOG"
 status=0
 python3 client.py 127.0.0.1:19494 smoke-test-token || status=1
 # The SPARQL client takes a CA file for https; any one will do over http.
-python3 sparql_client.py http://127.0.0.1:19495/sparql smoke-test-token /etc/ssl/certs/ca-certificates.crt || status=1
+CA=/etc/ssl/certs/ca-certificates.crt
+[ -f "$CA" ] || CA=/etc/ssl/cert.pem   # macOS
+python3 sparql_client.py http://127.0.0.1:19495/sparql smoke-test-token "$CA" || status=1
 python3 mcp_client.py http://127.0.0.1:19495/mcp smoke-test-token || status=1
 # The web UI: its page, and its catalog API (classes from the mapping, sources from discovery).
 curl -sf http://127.0.0.1:19495/ | grep -q '<title>duckgraphlake</title>' && echo "PASS web UI page" || { echo "FAIL web UI page"; status=1; }

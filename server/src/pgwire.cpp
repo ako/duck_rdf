@@ -48,7 +48,11 @@ bool ReadExact(int fd, void *buffer, size_t n) {
 
 bool WriteAll(int fd, const char *data, size_t n) {
 	while (n > 0) {
+#ifdef MSG_NOSIGNAL
 		auto sent = ::send(fd, data, n, MSG_NOSIGNAL);
+#else
+		auto sent = ::send(fd, data, n, 0); // macOS: SO_NOSIGPIPE is set on the socket instead
+#endif
 		if (sent <= 0) {
 			return false;
 		}
@@ -1496,6 +1500,9 @@ void PgServer::AcceptLoop() {
 		}
 		int yes = 1;
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+#ifdef SO_NOSIGPIPE
+		setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
+#endif
 		std::thread([this, fd]() {
 			PgSession session(*this, fd);
 			session.Run();
