@@ -185,8 +185,10 @@ std::string ReplaceCatalogGaps(const std::string &sql, const std::string &databa
 	for (auto &c : lower) {
 		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 	}
-	static const char *markers[] = {"current_database", "pg_backend_pid", "pg_locks",        "pg_database",
-	                                "pg_stat_ssl",      "pg_shdescription", "pg_get_userbyid", "age"};
+	static const char *markers[] = {"pg_catalog", "current_database", "pg_backend_pid", "pg_locks", "pg_database",
+	                                "pg_stat_",   "pg_shdescription", "pg_get_userbyid", "age",      "xmin",
+	                                "pg_roles",   "pg_auth_members",  "pg_timezone_",    "pg_is_in_recovery",
+	                                "pg_tablespace_location"};
 	bool any = false;
 	for (auto marker : markers) {
 		any = any || lower.find(marker) != std::string::npos;
@@ -204,10 +206,23 @@ std::string ReplaceCatalogGaps(const std::string &sql, const std::string &databa
 	// age() of a transaction id: DuckDB's age() takes timestamps only. No transaction id is ever old.
 	static const std::regex xid_age(R"re(\b(?:pg_catalog\s*\.\s*)?age\s*\(\s*[A-Za-z_0-9."]*(?:xid|transactionid|xmin)"?\s*\))re",
 	                                std::regex::icase);
-	auto out = ReplaceEach(sql, current_database, [&](const std::smatch &, size_t) { return db; });
+	// DuckDB registers some PostgreSQL functions only unqualified (pg_catalog.txid_current() is read
+	// as a column pg_catalog), and resolves all of them that way.
+	static const std::regex qualified_call(R"(\bpg_catalog\s*\.\s*([A-Za-z_][A-Za-z_0-9]*)\s*\()", std::regex::icase);
+	auto out = ReplaceEach(sql, qualified_call, [](const std::smatch &m, size_t) { return m[1].str() + "("; });
+	out = ReplaceEach(out, current_database, [&](const std::smatch &, size_t) { return db; });
 	out = ReplaceEach(out, backend_pid, [&](const std::smatch &, size_t) { return session_pid; });
 	out = ReplaceEach(out, userbyid, [](const std::smatch &, size_t) { return std::string("current_user"); });
-	out = ReplaceEach(out, xid_age, [](const std::smatch &, size_t) { return std::string("0::INTEGER"); }); // not a bare 0: ORDER BY 0 is a position
+	// not a bare 0: ORDER BY 0 is a position
+	out = ReplaceEach(out, xid_age, [](const std::smatch &, size_t) { return std::string("0::INTEGER"); });
+	// xmin, the row version clients such as DataGrip use to see what changed: DuckDB's catalog
+	// tables have none, so every row is at version 0.
+	static const std::regex xmin(R"(\b[A-Za-z_][A-Za-z_0-9]*\s*\.\s*xmin\b)", std::regex::icase);
+	out = ReplaceEach(out, xmin, [](const std::smatch &, size_t) { return std::string("0::BIGINT"); });
+	static const std::regex in_recovery(R"(\bpg_is_in_recovery\s*\(\s*\))", std::regex::icase);
+	out = ReplaceEach(out, in_recovery, [](const std::smatch &, size_t) { return std::string("false"); });
+	static const std::regex tablespace_location(R"(\bpg_tablespace_location\s*\([^()]*\))", std::regex::icase);
+	out = ReplaceEach(out, tablespace_location, [](const std::smatch &, size_t) { return std::string("NULL::VARCHAR"); });
 	// Catalog views DuckDB lacks, or (pg_database) lists DuckDB's own databases in.
 	struct View {
 		const char *name;
@@ -233,6 +248,28 @@ std::string ReplaceCatalogGaps(const std::string &sql, const std::string &databa
 	     "(SELECT " + session_pid + "::INTEGER AS pid, false AS ssl, NULL::VARCHAR AS version, NULL::VARCHAR AS cipher, "
 	     "NULL::INTEGER AS bits, NULL::VARCHAR AS client_dn, NULL::DECIMAL(38,0) AS client_serial, "
 	     "NULL::VARCHAR AS issuer_dn)"},
+	// One role: the user DuckDB reports as current_user.
+	    {"pg_roles",
+	     "(SELECT 10::INTEGER AS oid, current_user AS rolname, true AS rolsuper, true AS rolinherit, "
+	     "false AS rolcreaterole, false AS rolcreatedb, true AS rolcanlogin, false AS rolreplication, "
+	     "-1::INTEGER AS rolconnlimit, '********' AS rolpassword, NULL::TIMESTAMPTZ AS rolvaliduntil, "
+	     "false AS rolbypassrls, NULL::VARCHAR[] AS rolconfig)"},
+	    {"pg_auth_members",
+	     "(SELECT NULL::INTEGER AS oid, NULL::INTEGER AS roleid, NULL::INTEGER AS member, NULL::INTEGER AS grantor, "
+	     "NULL::BOOLEAN AS admin_option, NULL::BOOLEAN AS inherit_option, NULL::BOOLEAN AS set_option WHERE false)"},
+	    // DuckDB's own time zone list.
+	    {"pg_timezone_names", "(SELECT name, abbrev, utc_offset, is_dst FROM pg_timezone_names())"},
+	    {"pg_timezone_abbrevs", "(SELECT DISTINCT abbrev, utc_offset, is_dst FROM pg_timezone_names())"},
+	    // This session only.
+	    {"pg_stat_activity",
+	     "(SELECT 1::INTEGER AS datid, " + db + " AS datname, " + session_pid + "::INTEGER AS pid, "
+	     "NULL::INTEGER AS leader_pid, 10::INTEGER AS usesysid, current_user AS usename, "
+	     "NULL::VARCHAR AS application_name, '127.0.0.1' AS client_addr, "
+	     "NULL::VARCHAR AS client_hostname, NULL::INTEGER AS client_port, NULL::TIMESTAMPTZ AS backend_start, "
+	     "NULL::TIMESTAMPTZ AS xact_start, NULL::TIMESTAMPTZ AS query_start, NULL::TIMESTAMPTZ AS state_change, "
+	     "NULL::VARCHAR AS wait_event_type, NULL::VARCHAR AS wait_event, 'active' AS state, "
+	     "NULL::BIGINT AS backend_xid, NULL::BIGINT AS backend_xmin, NULL::BIGINT AS query_id, '' AS query, "
+	     "'client backend' AS backend_type)"},
 	    // No comments on databases or roles.
 	    {"pg_shdescription",
 	     "(SELECT NULL::INTEGER AS objoid, NULL::INTEGER AS classoid, NULL::VARCHAR AS description WHERE false)"},
