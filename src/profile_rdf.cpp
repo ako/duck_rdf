@@ -172,7 +172,7 @@ static unique_ptr<GlobalTableFunctionState> ProfileRDFGlobalInit(ClientContext &
 
 	auto state = make_uniq<ProfileRDFGlobalState>();
 	state->rows = BuildRows(accumulator);
-	return state;
+	return std::move(state);
 }
 
 // ============================================================

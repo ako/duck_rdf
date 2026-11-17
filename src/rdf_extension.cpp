@@ -250,7 +250,7 @@ static unique_ptr<GlobalTableFunctionState> RDFReaderGlobalInit(ClientContext &c
 			state->whole_files.push_back(i);
 		}
 	}
-	return state;
+	return std::move(state);
 }
 
 // Creates thread-local state; file opening is deferred to RDFReaderFunc
@@ -259,7 +259,7 @@ static unique_ptr<LocalTableFunctionState> RDFReaderInit(ExecutionContext &conte
 	auto state = make_uniq<RDFReaderLocalState>();
 	state->column_ids = input.column_ids;
 	state->filters = input.filters;
-	return state;
+	return std::move(state);
 }
 
 static void RDFReaderFunc(ClientContext &context, TableFunctionInput &input, DataChunk &output) {

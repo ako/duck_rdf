@@ -238,7 +238,7 @@ static unique_ptr<GlobalTableFunctionState> RDFPrefixesGlobalInit(ClientContext 
 		}
 	}
 
-	return state;
+	return std::move(state);
 }
 
 // ============================================================

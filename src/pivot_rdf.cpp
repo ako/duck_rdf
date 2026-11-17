@@ -355,7 +355,7 @@ static unique_ptr<GlobalTableFunctionState> PivotRDFGlobalInit(ClientContext &, 
 	auto &bind_data = (PivotRDFBindData &)*input.bind_data;
 	auto state = make_uniq<PivotRDFGlobalState>();
 	state->file_count = bind_data.file_paths.size();
-	return state;
+	return std::move(state);
 }
 
 static unique_ptr<LocalTableFunctionState> PivotRDFLocalInit(ExecutionContext &context, TableFunctionInitInput &input,
@@ -365,7 +365,7 @@ static unique_ptr<LocalTableFunctionState> PivotRDFLocalInit(ExecutionContext &c
 	vector<LogicalType> raw_types(6, LogicalType::VARCHAR);
 	state->raw_chunk.Initialize(Allocator::Get(context.client), raw_types);
 
-	return state;
+	return std::move(state);
 }
 
 // ============================================================
