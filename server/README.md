@@ -8,6 +8,7 @@ Iceberg, SQLite and DuckDB files, and an R2RML/YARRRML mapping, and it serves
 | SQL | `postgresql://127.0.0.1:5433` (PostgreSQL wire protocol, DuckDB's SQL) | Mendix's external database connector, psql, any PostgreSQL driver |
 | SQL | `quack:127.0.0.1:9494` (DuckDB's Quack protocol) | DuckDB CLI, Python, DuckDB's JDBC driver |
 | SPARQL | `http://127.0.0.1:9495/sparql` (SPARQL 1.1 Protocol) | RDF tools, REST calls from apps, the query page at `/` |
+| OData | `http://127.0.0.1:9495/odata` (OData v4, read-only) | Mendix external entities, any OData v4 client |
 | MCP | `http://127.0.0.1:9495/mcp` (streamable HTTP, JSON responses) | agents |
 
 It is DuckDB 2.0.0 with the rdf extension, Quack, httpfs, SQLite, Parquet and JSON compiled in. Iceberg
@@ -31,7 +32,8 @@ What it finds in `./data`:
 | `name.sqlite`, `name.sqlite3`, `name.db` | attached database `name`, each table also as a plain view |
 | `name.duckdb` | attached database `name`, each table also as a plain view |
 
-Options (`duckgraphlake --help`): `--config server.toml` (the Docker image's format, see
+Options (`duckgraphlake --help`): `--init setup.sql` (a SQL script run after discovery, e.g. views
+the mapping reads), `--config server.toml` (the Docker image's format, see
 DuckGraphLake's `server/server.example.toml`; flags override it), `--host`, `--http-port`,
 `--pg-port` (0 turns it off), `--sql-port`, `--token` (or `DUCKGRAPHLAKE_TOKEN`),
 `--require-token`, `--no-lock-down`.
@@ -86,6 +88,30 @@ SPARQL:
 curl --data-urlencode 'query=SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 5' http://127.0.0.1:9495/sparql
 ```
 
+OData: `http://127.0.0.1:9495/odata`, like Graph Studio's OData APIs: one entity set per class
+of the graph, not per table. The model comes from the mapping and the ontology (the extension's
+`rdf_mapping_schema`), so it needs no scan of the data:
+
+- **Entity sets and keys.** Each class (asserted by the mapping or implied by the ontology) is an
+  entity set and type, named after the class's local name. The key `ID` is the resource's IRI:
+  `GET /odata/Employee('http://data.example.com/person/10')`.
+- **Properties.** Each literal property of the class's instances is a typed property (Edm types from
+  the XSD datatypes: `xsd:integer` -> `Edm.Int64`, `xsd:decimal` -> `Edm.Decimal`, `xsd:date` ->
+  `Edm.Date`, ...). A subclass inherits its superclasses' properties.
+- **Navigation properties.** Each reference to another class is a navigation property. When a
+  reference can point to several classes, its target is the class that covers them all, or else
+  the most specific one.
+- **Queries.** `$filter` (comparisons, `and`/`or`/`not`, `null`, string functions, `year`/`month`/`day`,
+  and one level of navigation such as `worksFor/name eq 'Acme'`), `$select`, `$orderby`, `$top`,
+  `$skip`, `$count`, `$expand` (with a nested `$select`), the `/$count` segment, and navigation
+  (`Employee('...')/worksFor`).
+- **Execution.** Each request becomes a SPARQL query through the same translator as `/sparql`. Pages
+  hold at most 1000 entities (`[odata] max_page_size`), with an `@odata.nextLink` when a request
+  without `$top` has more.
+- **Read-only.** The `Capabilities` annotations in `$metadata` say so.
+
+If a property has several values for one entity, the entity shows one of them.
+
 MCP: add `http://127.0.0.1:9495/mcp` as a streamable HTTP server in the agent's configuration.
 Tools: `list_classes`, `describe_class`, `find_entity`, `describe_entity`, `sparql`, plus one per
 `[[mcp.templates]]` entry in the config file.
@@ -105,6 +131,9 @@ Tests (both need a DuckGraphLake checkout, for its fixture):
 
 - `DUCKGRAPHLAKE=<checkout> server/test/smoke_test.sh` runs the Docker image's SQL (Quack),
   SPARQL and MCP test clients against the binary.
+- `DUCKGRAPHLAKE=<checkout> server/test/odata_test.sh` runs `server/test/odata/ODataTest.java`
+  through Apache Olingo's OData v4 client: the metadata model, queries, keys, navigation and
+  `$expand`. Needs Java and Maven.
 - `DUCKGRAPHLAKE=<checkout> server/test/pg_test.sh` runs `server/test/pgjdbc/PgJdbcTest.java`
   through the PostgreSQL JDBC driver: metadata, parameterized queries (repeated, so the driver
   switches to server-side prepared statements and binary transfer), typed parameters,

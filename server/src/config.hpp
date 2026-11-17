@@ -47,6 +47,7 @@ struct Config {
 	bool auto_discover = true;
 	bool expose_attached_tables = true;
 	std::vector<ViewDef> views;
+	std::string init_sql; // a SQL file run after discovery (views over the discovered data)
 
 	// [rdf]
 	std::string mapping, ontology, unique_keys;
@@ -60,6 +61,11 @@ struct Config {
 	int64_t sparql_max_rows = 100000;
 	std::string cors_origin = "*";
 
+	// [odata]
+	bool odata_enabled = true;
+	int odata_anonymous = -1;
+	int64_t odata_max_page = 1000;
+
 	// [mcp]
 	bool mcp_enabled = true;
 	int mcp_anonymous = -1;
@@ -69,6 +75,9 @@ struct Config {
 	bool Loopback() const;
 	bool SparqlAnonymous() const {
 		return sparql_anonymous < 0 ? Loopback() : sparql_anonymous == 1;
+	}
+	bool ODataAnonymous() const {
+		return odata_anonymous < 0 ? Loopback() : odata_anonymous == 1;
 	}
 	bool McpAnonymous() const {
 		return mcp_anonymous < 0 ? Loopback() : mcp_anonymous == 1;

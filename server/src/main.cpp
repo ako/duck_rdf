@@ -3,6 +3,7 @@
 //   SQL     over the PostgreSQL wire protocol (psql, the PostgreSQL JDBC driver: Mendix's external database
 //           connector) and over DuckDB's Quack protocol (DuckDB CLI, Python, DuckDB's JDBC driver)
 //   SPARQL  a SPARQL 1.1 Protocol endpoint at http://host:port/sparql, over an R2RML/YARRRML mapping
+//   OData   OData v4 over the graph at http://host:port/odata: one entity set per class (Mendix external entities)
 //   MCP     an MCP server for agents at http://host:port/mcp
 //
 // The same configuration file as the Docker image (server.example.toml) works here; flags override it.
@@ -10,6 +11,7 @@
 #include "json.hpp"
 #include "log.hpp"
 #include "mcp.hpp"
+#include "odata.hpp"
 #include "pgwire.hpp"
 #include "setup.hpp"
 #include "sparql.hpp"
@@ -22,6 +24,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <iostream>
 
 namespace fs = std::filesystem;
@@ -50,8 +54,9 @@ Usage: duckgraphlake [options] [DATA_DIR]
   -c, --config FILE      a server.toml (the Docker image's format); flags override it
   -m, --mapping GLOB     R2RML (.ttl) or YARRRML (.yml) mapping file(s) for SPARQL and MCP
   -o, --ontology GLOB    ontology file(s): class and property hierarchies, inverses, transitivity
+  -i, --init FILE        a SQL script run after discovery, e.g. views over the discovered data
       --host HOST        address to listen on (default 127.0.0.1)
-      --http-port PORT   SPARQL (/sparql), MCP (/mcp) and a query page (/) (default 9495)
+      --http-port PORT   SPARQL (/sparql), OData (/odata), MCP (/mcp) and a query page (/) (default 9495)
       --pg-port PORT     PostgreSQL wire protocol (default 5433; 0 turns it off)
       --sql-port PORT    DuckDB Quack protocol (default 9494)
       --token TOKEN      access token (or DUCKGRAPHLAKE_TOKEN); required unless on a loopback address
@@ -257,7 +262,7 @@ copyEndpointOnNewTab: true});</script>
 
 int main(int argc, char **argv) {
 	Config config;
-	std::string data_dir_arg, mapping_arg, ontology_arg, host_arg, token_arg;
+	std::string data_dir_arg, mapping_arg, ontology_arg, host_arg, token_arg, init_arg;
 	int http_port = 0, sql_port = 0, pg_port = -1;
 	bool no_lock_down = false, require_token = false;
 	try {
@@ -277,6 +282,8 @@ int main(int argc, char **argv) {
 				mapping_arg = NeedValue(i, argc, argv);
 			} else if (a == "-o" || a == "--ontology") {
 				ontology_arg = NeedValue(i, argc, argv);
+			} else if (a == "-i" || a == "--init") {
+				init_arg = NeedValue(i, argc, argv);
 			} else if (a == "--host") {
 				host_arg = NeedValue(i, argc, argv);
 			} else if (a == "--http-port") {
@@ -318,6 +325,9 @@ int main(int argc, char **argv) {
 	if (!host_arg.empty()) {
 		config.host = host_arg;
 	}
+	if (!init_arg.empty()) {
+		config.init_sql = init_arg;
+	}
 	if (http_port) {
 		config.http_port = http_port;
 	}
@@ -332,6 +342,7 @@ int main(int argc, char **argv) {
 	}
 	if (require_token) {
 		config.sparql_anonymous = 0;
+		config.odata_anonymous = 0;
 		config.mcp_anonymous = 0;
 	}
 	std::string token = token_arg;
@@ -385,6 +396,16 @@ int main(int argc, char **argv) {
 		if (exposed.empty()) {
 			Log("  (no data files found)");
 		}
+		if (!config.init_sql.empty()) {
+			std::ifstream in(config.init_sql);
+			if (!in) {
+				throw std::runtime_error("cannot read " + config.init_sql);
+			}
+			std::stringstream sql;
+			sql << in.rdbuf();
+			Exec(con, sql.str());
+			Log("ran " + config.init_sql);
+		}
 		ConfigureSparql(con, config);
 		Log("mapping: " + (config.mapping.empty() ? std::string("(none: SPARQL and MCP are off)") : config.mapping));
 		if (!config.mapping.empty() && GlobFiles(con, config.mapping).empty()) {
@@ -420,6 +441,11 @@ int main(int argc, char **argv) {
 
 		SparqlExecutor executor(db, config.mapping, config.timeout_seconds);
 		McpServer mcp(db, executor, config, ontology_files);
+		ODataService odata(db, executor, config.odata_max_page);
+		bool serve_odata = config.odata_enabled && !config.mapping.empty();
+		if (serve_odata) {
+			odata.Load(config.mapping, ontology_files);
+		}
 		httplib::Server http;
 		g_http = &http;
 		std::signal(SIGINT, Stop);
@@ -439,6 +465,38 @@ int main(int argc, char **argv) {
 				res.set_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept");
 				res.status = 204;
 			});
+		}
+		if (serve_odata) {
+			auto odata_handler = [&](const httplib::Request &req, httplib::Response &res) {
+				SetCors(config, res);
+				res.set_header("OData-Version", "4.0");
+				if (!config.ODataAnonymous() && !Authorized(req, token)) {
+					res.set_header("WWW-Authenticate", "Bearer realm=\"odata\"");
+					return Text(res, 401, "send Authorization: Bearer <token>");
+				}
+				if (req.method != "GET" && req.method != "HEAD") {
+					res.set_header("Allow", "GET");
+					return Text(res, 405, "the OData service is read-only");
+				}
+				ODataRequest request;
+				request.path = req.path.substr(std::string("/odata").size());
+				for (auto &p : req.params) {
+					request.query.emplace(p.first, p.second);
+				}
+				auto host = req.get_header_value("Host");
+				request.base_url =
+				    "http://" + (host.empty() ? config.host + ":" + std::to_string(config.http_port) : host) + "/odata";
+				auto response = odata.Handle(request);
+				res.status = response.status;
+				if (response.status != 204) {
+					res.set_content(response.body, response.content_type);
+				}
+			};
+			http.Get(R"(/odata(/.*)?)", odata_handler);
+			http.Post(R"(/odata(/.*)?)", odata_handler);
+			http.Put(R"(/odata(/.*)?)", odata_handler);
+			http.Patch(R"(/odata(/.*)?)", odata_handler);
+			http.Delete(R"(/odata(/.*)?)", odata_handler);
 		}
 		if (serve_mcp) {
 			http.Post("/mcp", [&](const httplib::Request &req, httplib::Response &res) {
@@ -485,6 +543,10 @@ int main(int argc, char **argv) {
 		if (serve_sparql) {
 			Log("SPARQL  " + base + "/sparql" + (config.SparqlAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
 			    "; a query page at " + base + "/");
+		}
+		if (serve_odata) {
+			Log("OData   " + base + "/odata" + (config.ODataAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
+			    " (" + std::to_string(odata.Sets().size()) + " entity sets)");
 		}
 		if (serve_mcp) {
 			Log("MCP     " + base + "/mcp" + (config.McpAnonymous() ? "" : "  (Authorization: Bearer <token>)") + " (" +

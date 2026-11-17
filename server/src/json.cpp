@@ -132,15 +132,25 @@ void Json::DumpTo(std::string &out) const {
 			out += "null";
 			break;
 		}
-		char buf[32];
-		snprintf(buf, sizeof(buf), "%.17g", double_);
-		// The shortest form that reads back the same, as most JSON writers print it.
-		for (int precision = 1; precision < 17; precision++) {
-			char shorter[32];
-			snprintf(shorter, sizeof(shorter), "%.*g", precision, double_);
-			if (std::strtod(shorter, nullptr) == double_) {
-				snprintf(buf, sizeof(buf), "%s", shorter);
-				break;
+		char buf[64];
+		auto magnitude = std::fabs(double_);
+		if (magnitude == 0 || (magnitude >= 1e-6 && magnitude < 1e15)) {
+			// Plain decimal notation with the fewest digits that read back the same: 20.0, 0.1, 9.5.
+			for (int decimals = 1; decimals <= 17; decimals++) {
+				snprintf(buf, sizeof(buf), "%.*f", decimals, double_);
+				if (std::strtod(buf, nullptr) == double_) {
+					break;
+				}
+			}
+		} else {
+			snprintf(buf, sizeof(buf), "%.17g", double_);
+			for (int precision = 1; precision < 17; precision++) {
+				char shorter[64];
+				snprintf(shorter, sizeof(shorter), "%.*g", precision, double_);
+				if (std::strtod(shorter, nullptr) == double_) {
+					snprintf(buf, sizeof(buf), "%s", shorter);
+					break;
+				}
 			}
 		}
 		out += buf;

@@ -75,6 +75,8 @@ void LoadConfigFile(const std::string &path, Config &config) {
 	Read(table, "data", "directory", config.data_dir);
 	config.data_dir = ResolvePath(config, config.data_dir);
 	Read(table, "data", "auto_discover", config.auto_discover);
+	Read(table, "data", "init_sql", config.init_sql);
+	config.init_sql = ResolvePath(config, config.init_sql);
 	Read(table, "data", "expose_attached_tables", config.expose_attached_tables);
 
 	Read(table, "rdf", "mapping", config.mapping);
@@ -93,6 +95,9 @@ void LoadConfigFile(const std::string &path, Config &config) {
 	Read(table, "sparql", "max_rows", config.sparql_max_rows);
 	Read(table, "sparql", "cors_origin", config.cors_origin);
 
+	Read(table, "odata", "enabled", config.odata_enabled);
+	ReadTri(table, "odata", "anonymous", config.odata_anonymous);
+	Read(table, "odata", "max_page_size", config.odata_max_page);
 	Read(table, "mcp", "enabled", config.mcp_enabled);
 	ReadTri(table, "mcp", "anonymous", config.mcp_anonymous);
 	Read(table, "mcp", "max_rows", config.mcp_max_rows);
