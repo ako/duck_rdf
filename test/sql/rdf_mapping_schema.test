@@ -1,0 +1,47 @@
+# name: test/sql/rdf_mapping_schema.test
+# description: rdf_mapping_schema lists what a mapping can produce per class - predicates, object kinds, literal datatypes (also inferred from column types) and the classes a reference points to - from the mapping alone, with the ontology's classes when one is given.
+# group: [sql]
+
+require rdf
+
+statement ok
+CREATE TABLE emp AS SELECT * FROM (VALUES (10, 'Ann', 1, 52000), (11, 'Bob', 1, 61000)) t(id, name, company_id, salary);
+
+statement ok
+CREATE TABLE company AS SELECT * FROM (VALUES (1, 'Acme')) t(id, name);
+
+statement ok
+CREATE TABLE payment AS SELECT * FROM (VALUES (1, 0.10::DECIMAL(10,2))) t(id, amount);
+
+# Literal datatypes: declared (salary, amount) or from the column's SQL type (name: VARCHAR -> xsd:string).
+# worksFor's IRI template is the Company subject template with another column name, so it points to Company.
+query TTTTT
+SELECT class, predicate, object_kind, datatype, target_class FROM rdf_mapping_schema('test/regression/hr_only.ttl') ORDER BY ALL;
+----
+http://example.com/ns#Company	http://example.com/ns#name	literal	http://www.w3.org/2001/XMLSchema#string	NULL
+http://example.com/ns#Employee	http://example.com/ns#name	literal	http://www.w3.org/2001/XMLSchema#string	NULL
+http://example.com/ns#Employee	http://example.com/ns#salary	literal	http://www.w3.org/2001/XMLSchema#integer	NULL
+http://example.com/ns#Employee	http://example.com/ns#worksFor	iri	NULL	http://example.com/ns#Company
+http://example.com/ns#Payment	http://example.com/ns#amount	literal	http://www.w3.org/2001/XMLSchema#decimal	NULL
+
+# With the ontology, the superclasses appear too
+query T
+SELECT DISTINCT class FROM rdf_mapping_schema('test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl') ORDER BY ALL;
+----
+http://example.com/ns#Company
+http://example.com/ns#Employee
+http://example.com/ns#Party
+http://example.com/ns#Payment
+http://example.com/ns#Person
+
+query TT
+SELECT DISTINCT predicate, triples_map IS NOT NULL FROM rdf_mapping_schema('test/regression/hr_only.ttl', ontology := 'test/regression/ontology.ttl') WHERE class = 'http://example.com/ns#Person' ORDER BY ALL;
+----
+http://example.com/ns#name	true
+http://example.com/ns#salary	true
+http://example.com/ns#worksFor	true
+
+statement error
+SELECT * FROM rdf_mapping_schema('test/regression/no_such_mapping.ttl');
+----
+Mapping file not found

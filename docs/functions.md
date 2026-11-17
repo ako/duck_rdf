@@ -389,6 +389,38 @@ SELECT can_call_inside_out('mapping.ttl');
 
 ---
 
+## `rdf_mapping_schema(mapping, [ontology])`
+
+Table function. What a full R2RML or YARRRML mapping can produce, per class: one row per class, predicate and object shape. It reads the mapping only (and the ontology, if any); nothing in the data is scanned. Servers use it to expose the graph as typed entities: the `duckgraphlake` server's OData endpoint builds its entity sets from it.
+
+**Parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mapping` | VARCHAR | Path or glob pattern of a full R2RML or YARRRML mapping, as for `sparql_to_sql` |
+| `ontology` | VARCHAR (named, optional) | Ontology file(s); defaults to the `sparql_ontology` setting. Classes the ontology implies (superclasses, `rdfs:domain`/`rdfs:range` classes) then appear with the predicates their instances get |
+
+**Returns**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `class` | VARCHAR | A class the triples map's subject map asserts; NULL for a triples map without `rr:class` |
+| `predicate` | VARCHAR | A constant predicate of one of its predicate-object maps; NULL for a class without any |
+| `object_kind` | VARCHAR | `iri`, `bnode`, `literal` or `unknown` |
+| `datatype` | VARCHAR | A literal's datatype: `rr:datatype`, or for a plain `rr:column` literal the XSD type of the column's SQL type (R2RML §10.2); NULL when not settled by the mapping |
+| `language` | VARCHAR | A literal's `rr:language` |
+| `target_class` | VARCHAR | For an IRI object: a class of the subjects it can refer to - the parent triples map's classes for a referencing object map, or the classes of every subject map whose IRI template has the same shape (column names aside). One row per possible class |
+| `triples_map` | VARCHAR | The triples map the row comes from |
+
+**Example**
+
+```sql
+SELECT class, predicate, object_kind, datatype, target_class
+FROM rdf_mapping_schema('mapping.ttl', ontology := 'ontology.ttl');
+```
+
+---
+
 ## `sparql_to_sql(sparql, mapping)`
 
 Scalar function. Translates a SPARQL `SELECT` or `ASK` query into an equivalent SQL query, using an R2RML or YARRRML mapping file "in reverse" (via the [SQL2RDF++](https://github.com/nonodename/sql2rdf) `sparql2sql` translator). The returned SQL is a standalone query — it can be executed directly against the mapped tables without going through `sparql_to_sql` again.

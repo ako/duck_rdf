@@ -1,5 +1,6 @@
 #include "include/sparql_to_sql.hpp"
 #include "include/r2rml_copy.hpp"
+#include <map>
 #include <set>
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 #include "duckdb/common/enums/vector_type.hpp"
@@ -38,6 +39,17 @@
 #include <sparql-parser/Parser.h>
 #include <sparql-parser/ast/Query.h>
 #include <sparql2sql/DuckDbDialect.h>
+#include <sparql2sql/LogicalTableSource.h>
+#include <sparql2sql/TermMapSql.h>
+#include <r2rml/ConstantTermMap.h>
+#include <r2rml/LogicalTable.h>
+#include <r2rml/PredicateObjectMap.h>
+#include <r2rml/ReferencingObjectMap.h>
+#include <r2rml/SubjectMap.h>
+#include <r2rml/TriplesMap.h>
+#include <r2rml/TemplateTermMap.h>
+#include "duckdb/function/table_function.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include <sparql2sql/Ontology.h>
 #include <sparql2sql/Translator.h>
 #include <sparql2sql/TypeCatalog.h>
@@ -408,6 +420,233 @@ std::string TranslateSparqlToSql(ClientContext *context, const std::string &spar
 	return sql;
 }
 
+// ============================================================
+// rdf_mapping_schema(mapping): what the mapping can produce, per class
+// ============================================================
+//
+// One row per (class, predicate, object shape) a triples map declares: the classes its subject
+// map asserts (after saturation with the ontology, so inferred classes are included), each
+// constant predicate of its predicate-object maps, and what the object is - an IRI, a blank
+// node or a literal with its datatype and language as the translator itself infers them (an
+// rr:column literal without rr:datatype gets its datatype from the column's SQL type). For a
+// referencing object map, target_class is the parent triples map's class. Read from the parsed
+// mapping alone: nothing in the data is scanned. Used by servers that expose the graph as typed
+// entities (OData).
+
+// A template with its column names left out: "http://x/{id}" and "http://x/{company_id}" build
+// the same IRIs from the same key values.
+static std::string TemplateShape(const std::string &templ) {
+	std::string out;
+	bool in_column = false;
+	for (size_t i = 0; i < templ.size(); i++) {
+		char c = templ[i];
+		if (c == '\\' && i + 1 < templ.size()) {
+			out.push_back(c);
+			out.push_back(templ[++i]);
+		} else if (c == '{') {
+			in_column = true;
+			out += "{}";
+		} else if (c == '}') {
+			in_column = false;
+		} else if (!in_column) {
+			out.push_back(c);
+		}
+	}
+	return out;
+}
+
+struct MappingSchemaRow {
+	std::string cls, predicate, kind, datatype, lang, target_class, source;
+	bool has_cls = false, has_datatype = false, has_lang = false, has_target = false;
+};
+
+struct MappingSchemaBindData : public TableFunctionData {
+	std::vector<MappingSchemaRow> rows;
+};
+
+struct MappingSchemaState : public GlobalTableFunctionState {
+	idx_t position = 0;
+};
+
+static const char *TermKindName(rdf::TermKind kind) {
+	switch (kind) {
+	case rdf::TermKind::Iri:
+		return "iri";
+	case rdf::TermKind::BlankNode:
+		return "bnode";
+	case rdf::TermKind::Literal:
+		return "literal";
+	default:
+		return "unknown";
+	}
+}
+
+static unique_ptr<FunctionData> MappingSchemaBind(ClientContext &context, TableFunctionBindInput &input,
+                                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
+	if (input.inputs[0].IsNull()) {
+		throw BinderException("rdf_mapping_schema: the mapping path cannot be NULL");
+	}
+	auto mapping_path = input.inputs[0].GetValue<string>();
+	std::string ontology_override;
+	bool has_override = false;
+	auto it = input.named_parameters.find("ontology");
+	if (it != input.named_parameters.end() && !it->second.IsNull()) {
+		ontology_override = it->second.GetValue<string>();
+		has_override = true;
+	}
+	auto prepared =
+	    GetPreparedMapping(&context, mapping_path, OntologyPath(&context, has_override ? &ontology_override : nullptr));
+	auto result = make_uniq<MappingSchemaBindData>();
+	sparql2sql::DuckDbDialect dialect;
+	// The classes of the subjects each IRI template produces: an object built from the same
+	// template refers to them (how mappings usually link without an rr:parentTriplesMap).
+	std::map<std::string, std::set<std::string>> template_classes;
+	for (auto &tm : prepared->mapping.triplesMaps) {
+		if (!tm || !tm->subjectMap) {
+			continue;
+		}
+		auto value = tm->subjectMap->valueTermMap();
+		auto templ = dynamic_cast<const r2rml::TemplateTermMap *>(value);
+		if (templ) {
+			for (auto &c : tm->subjectMap->classIRIs) {
+				template_classes[TemplateShape(templ->templateString)].insert(c);
+			}
+		}
+	}
+	for (auto &tm : prepared->mapping.triplesMaps) {
+		if (!tm || !tm->subjectMap) {
+			continue;
+		}
+		std::string identity = tm->logicalTable ? sparql2sql::logicalTableIdentity(*tm->logicalTable) : std::string();
+		std::vector<std::string> classes = tm->subjectMap->classIRIs;
+		std::vector<std::pair<bool, std::string>> subjects;
+		if (classes.empty()) {
+			subjects.emplace_back(false, std::string());
+		}
+		for (auto &c : classes) {
+			subjects.emplace_back(true, c);
+		}
+		for (auto &pom : tm->predicateObjectMaps) {
+			for (auto &pm : pom->predicateMaps) {
+				auto constant = dynamic_cast<const r2rml::ConstantTermMap *>(pm.get());
+				if (!constant || !constant->constantValue.isIri()) {
+					continue; // a computed predicate has no single name
+				}
+				auto &predicate = constant->constantValue.lexical();
+				for (auto &om : pom->objectMaps) {
+					std::vector<MappingSchemaRow> shapes;
+					auto ref = dynamic_cast<const r2rml::ReferencingObjectMap *>(om.get());
+					if (ref) {
+						MappingSchemaRow row;
+						row.kind = "iri";
+						auto parent = ref->parentTriplesMap;
+						if (parent && parent->subjectMap && !parent->subjectMap->classIRIs.empty()) {
+							for (auto &pc : parent->subjectMap->classIRIs) {
+								row.target_class = pc;
+								row.has_target = true;
+								shapes.push_back(row);
+							}
+						} else {
+							shapes.push_back(row);
+						}
+					} else {
+						auto info =
+						    sparql2sql::termMapToSqlExpr(*om, "t", dialect, prepared->catalog.get(), identity).term;
+						MappingSchemaRow row;
+						row.kind = TermKindName(info.kind);
+						if (!info.datatypeIri.empty()) {
+							row.datatype = info.datatypeIri;
+							row.has_datatype = true;
+						}
+						if (!info.lang.empty()) {
+							row.lang = info.lang;
+							row.has_lang = true;
+						}
+						auto templ = dynamic_cast<const r2rml::TemplateTermMap *>(om.get());
+						auto targets = templ && info.kind == rdf::TermKind::Iri
+						                   ? template_classes.find(TemplateShape(templ->templateString))
+						                   : template_classes.end();
+						if (targets != template_classes.end()) {
+							for (auto &target : targets->second) {
+								row.target_class = target;
+								row.has_target = true;
+								shapes.push_back(row);
+							}
+						} else {
+							shapes.push_back(row);
+						}
+					}
+					for (auto &subject : subjects) {
+						for (auto shape : shapes) {
+							shape.cls = subject.second;
+							shape.has_cls = subject.first;
+							shape.predicate = predicate;
+							shape.source = tm->id;
+							result->rows.push_back(shape);
+						}
+					}
+				}
+			}
+		}
+		// A class with no predicate-object maps still appears, with a NULL predicate.
+		if (tm->predicateObjectMaps.empty()) {
+			for (auto &subject : subjects) {
+				if (subject.first) {
+					MappingSchemaRow row;
+					row.cls = subject.second;
+					row.has_cls = true;
+					row.source = tm->id;
+					result->rows.push_back(row);
+				}
+			}
+		}
+	}
+	names = {"class", "predicate", "object_kind", "datatype", "language", "target_class", "triples_map"};
+	return_types = vector<LogicalType>(names.size(), LogicalType::VARCHAR);
+	return std::move(result);
+}
+
+static unique_ptr<GlobalTableFunctionState> MappingSchemaInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<MappingSchemaState>();
+}
+
+static void MappingSchemaFunc(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+	auto &data = input.bind_data->Cast<MappingSchemaBindData>();
+	auto &state = input.global_state->Cast<MappingSchemaState>();
+	idx_t count = 0;
+	auto opt = [](bool has, const std::string &v) {
+		return has ? Value(v) : Value();
+	};
+	while (state.position < data.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = data.rows[state.position++];
+		output.data[0].SetValue(count, opt(row.has_cls, row.cls));
+		output.data[1].SetValue(count, opt(!row.predicate.empty(), row.predicate));
+		output.data[2].SetValue(count, opt(!row.kind.empty(), row.kind));
+		output.data[3].SetValue(count, opt(row.has_datatype, row.datatype));
+		output.data[4].SetValue(count, opt(row.has_lang, row.lang));
+		output.data[5].SetValue(count, opt(row.has_target, row.target_class));
+		output.data[6].SetValue(count, opt(!row.source.empty(), row.source));
+		count++;
+	}
+	output.SetChildCardinality(count);
+}
+
+static void RegisterMappingSchema(ExtensionLoader &loader) {
+	TableFunction tf("rdf_mapping_schema", {LogicalType::VARCHAR}, MappingSchemaFunc, MappingSchemaBind,
+	                 MappingSchemaInit);
+	tf.GetSignature().AddKeywordOnly("ontology", LogicalType::VARCHAR, Value());
+	CreateTableFunctionInfo info(tf);
+	FunctionDescription desc;
+	desc.description =
+	    "What an R2RML or YARRRML mapping can produce, per class: one row per class, predicate and object shape "
+	    "(object_kind iri, bnode, literal or unknown; datatype and language for literals; target_class for a "
+	    "reference to another triples map). Uses the sparql_ontology setting (or the ontology parameter), so "
+	    "classes the ontology implies are included. Reads the mapping only, not the data.";
+	desc.examples.push_back("SELECT * FROM rdf_mapping_schema('mapping.ttl')");
+	info.descriptions.push_back(desc);
+	loader.RegisterFunction(std::move(info));
+}
+
 inline void SparqlToSql(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &sparql_vector = args.data[0];
 	auto &mapping_vector = args.data[1];
@@ -437,6 +676,7 @@ void RegisterSparqlToSql(ExtensionLoader &loader) {
 	    "SELECT sparql_to_sql('SELECT ?e ?name WHERE { ?e <http://example.com/ns#name> ?name }', 'mapping.ttl')");
 	info.descriptions.push_back(desc);
 	loader.RegisterFunction(std::move(info));
+	RegisterMappingSchema(loader);
 
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption(

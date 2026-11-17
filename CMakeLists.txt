@@ -170,3 +170,10 @@ install(
   EXPORT "${DUCKDB_EXPORT_SET}"
   LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
   ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
+
+# The duckgraphlake server binary: DuckDB with this extension (and Quack, SQLite)
+# compiled in, serving SQL, SPARQL and MCP. Off by default; see server/README.md.
+option(RDF_BUILD_SERVER "Build the duckgraphlake server executable" OFF)
+if(RDF_BUILD_SERVER AND NOT EMSCRIPTEN)
+  add_subdirectory(server)
+endif()
