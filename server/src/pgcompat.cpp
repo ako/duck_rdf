@@ -311,6 +311,33 @@ std::optional<std::string> RewriteCatalogQuery(const std::string &sql) {
 	if (Contains(sql, "SELECT t.typname,t.oid FROM pg_catalog.pg_type t")) {
 		return std::string("SELECT typname, oid FROM ") + PG_TYPES;
 	}
+	// TypeInfoCache: one type by name ($1)
+	if (Contains(sql, "WHERE typname = $1") && Contains(sql, "array_upper(current_schemas(false), 1)")) {
+		return std::string("SELECT oid, typname FROM ") + PG_TYPES + " WHERE typname = $1 LIMIT 1";
+	}
+	// The length of the name type (getClientInfoProperties, getVersionColumns)
+	if (Contains(sql, "SELECT t.typlen FROM pg_catalog.pg_type t") && Contains(sql, "t.typname='name'")) {
+		return std::string("SELECT 64::SMALLINT AS typlen");
+	}
+	// getMaxIndexKeys, which getImportedKeys/getExportedKeys read first: PostgreSQL's default
+	if (Contains(sql, "FROM pg_catalog.pg_settings WHERE name='max_index_keys'")) {
+		return std::string("SELECT '32' AS setting");
+	}
+	// DatabaseMetaData.getIndexInfo: clients see views, which have no indexes
+	if (Contains(sql, "AS NON_UNIQUE") && Contains(sql, "_pg_expandarray(i.indkey)")) {
+		return std::string(
+		    "SELECT NULL::VARCHAR AS TABLE_CAT, NULL::VARCHAR AS TABLE_SCHEM, NULL::VARCHAR AS TABLE_NAME, "
+		    "NULL::BOOLEAN AS NON_UNIQUE, NULL::VARCHAR AS INDEX_QUALIFIER, NULL::VARCHAR AS INDEX_NAME, "
+		    "NULL::INTEGER AS TYPE, NULL::INTEGER AS ORDINAL_POSITION, NULL::VARCHAR AS COLUMN_NAME, "
+		    "NULL::VARCHAR AS ASC_OR_DESC, NULL::DOUBLE AS CARDINALITY, NULL::INTEGER AS PAGES, "
+		    "NULL::VARCHAR AS FILTER_CONDITION WHERE false");
+	}
+	// DatabaseMetaData.getFunctions: the server defines none
+	if (Contains(sql, "AS FUNCTION_TYPE") && Contains(sql, "pg_get_function_result")) {
+		return std::string("SELECT NULL::VARCHAR AS FUNCTION_CAT, NULL::VARCHAR AS FUNCTION_SCHEM, "
+		                   "NULL::VARCHAR AS FUNCTION_NAME, NULL::VARCHAR AS REMARKS, NULL::SMALLINT AS FUNCTION_TYPE, "
+		                   "NULL::VARCHAR AS SPECIFIC_NAME WHERE false");
+	}
 	if (Contains(sql, "'pg_catalog.array_in'::regproc")) {
 		return std::string("SELECT false AS is_array, 'b' AS typtype, typname, oid FROM ") + PG_TYPES +
 		       " ORDER BY oid DESC";
