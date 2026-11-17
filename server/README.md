@@ -203,6 +203,13 @@ compiles in httpfs, Quack and SQLite (fetched from their DuckDB repositories at 
 DuckDB 2.0.0 pins); the server itself fetches cpp-httplib and toml++. A first build takes
 about an hour on 4 cores.
 
+On macOS (Apple Silicon or Intel), Homebrew is enough: `brew install cmake ninja openssl@3` (libxml2 and
+curl come with macOS), then
+`EXTRA_CMAKE_FLAGS="-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" server/build.sh`. If CMake's
+compiler check fails with `ld: tapi error: malformed file ... unknown architecture`, Xcode and the
+Command Line Tools are at different versions; build with one of them throughout, e.g.
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools`.
+
 Tests (both need a DuckGraphLake checkout, for its fixture):
 
 - `DUCKGRAPHLAKE=<checkout> server/test/smoke_test.sh` runs the Docker image's SQL (Quack),

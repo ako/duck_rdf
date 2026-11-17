@@ -1,5 +1,6 @@
 #include "pgcompat.hpp"
 
+#include <cctype>
 #include <regex>
 #include <vector>
 
@@ -139,6 +140,37 @@ std::string PgTypeOidCase(const std::string &e) {
 	       " = 'TIME' THEN 1083 WHEN " + e + " = 'TIMESTAMP WITH TIME ZONE' THEN 1184 WHEN " + e +
 	       " LIKE 'TIMESTAMP%' THEN 1114 WHEN " + e + " = 'INTERVAL' THEN 1186 WHEN " + e + " = 'BLOB' THEN 17 WHEN " +
 	       e + " = 'UUID' THEN 2950 WHEN " + e + " = 'VARCHAR' THEN 1043 ELSE 25 END)::INTEGER";
+}
+
+std::string ReplaceSessionFunctions(const std::string &sql, const std::string &database, int32_t pid) {
+	// Cheap test first: almost every query has none of these.
+	auto lower = sql;
+	for (auto &c : lower) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	if (lower.find("current_database") == std::string::npos && lower.find("pg_backend_pid") == std::string::npos &&
+	    lower.find("pg_locks") == std::string::npos) {
+		return sql;
+	}
+	static const std::regex current_database(R"(\b(?:pg_catalog\s*\.\s*)?current_database\s*\(\s*\))",
+	                                         std::regex::icase);
+	static const std::regex backend_pid(R"(\b(?:pg_catalog\s*\.\s*)?pg_backend_pid\s*\(\s*\))", std::regex::icase);
+	static const std::regex locks(R"(\b(?:pg_catalog\s*\.\s*)?pg_locks\b)", std::regex::icase);
+	// No locks are reported: DuckDB's concurrency control is optimistic.
+	static const std::string empty_locks =
+	    "(SELECT NULL::VARCHAR AS locktype, NULL::INTEGER AS database, NULL::INTEGER AS relation, "
+	    "NULL::INTEGER AS page, NULL::SMALLINT AS tuple, NULL::VARCHAR AS virtualxid, NULL::BIGINT AS transactionid, "
+	    "NULL::INTEGER AS classid, NULL::INTEGER AS objid, NULL::SMALLINT AS objsubid, "
+	    "NULL::VARCHAR AS virtualtransaction, NULL::INTEGER AS pid, NULL::VARCHAR AS mode, NULL::BOOLEAN AS granted, "
+	    "NULL::BOOLEAN AS fastpath, NULL::TIMESTAMPTZ AS waitstart WHERE false)";
+	// regex_replace reads $ in the replacement as a group reference; $$ is a literal $.
+	std::string name;
+	for (char c : Quote(database)) {
+		name += c == '$' ? std::string("$$") : std::string(1, c);
+	}
+	auto out = std::regex_replace(sql, current_database, name);
+	out = std::regex_replace(out, backend_pid, std::to_string(pid));
+	return std::regex_replace(out, locks, empty_locks);
 }
 
 std::optional<std::string> RewriteCatalogQuery(const std::string &sql) {

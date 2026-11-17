@@ -405,6 +405,12 @@ int main(int argc, char **argv) {
 		if (!config.temp_directory.empty()) {
 			db_config.SetOptionByName("temp_directory", duckdb::Value(config.temp_directory));
 		}
+		if (config.lock_down) {
+			// Secrets in memory only: the stored-secrets directory is outside the allowed ones. Set before
+			// the database opens: once anything uses the secret manager (the first INSTALL of iceberg goes
+			// through httpfs) DuckDB refuses to change it.
+			db_config.SetOptionByName("allow_persistent_secrets", duckdb::Value::BOOLEAN(false));
+		}
 		duckdb::DuckDB db(nullptr, &db_config);
 		// The extensions compiled into this binary: rdf, Quack, SQLite, Parquet, JSON, ...
 		duckdb::ExtensionHelper::LoadAllExtensions(db);
@@ -479,6 +485,7 @@ int main(int argc, char **argv) {
 		g_http = &http;
 		std::signal(SIGINT, Stop);
 		std::signal(SIGTERM, Stop);
+		std::signal(SIGPIPE, SIG_IGN); // a client closing its socket must not kill the server
 
 		bool serve_sparql = config.sparql_enabled && !config.mapping.empty();
 		bool serve_mcp_flag = config.mcp_enabled && !config.mapping.empty();

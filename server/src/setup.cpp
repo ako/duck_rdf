@@ -210,6 +210,9 @@ std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config) {
 					if (!iceberg_loaded) {
 						// Iceberg is not compiled in (its AWS dependencies are large): DuckDB's signed
 						// extension is installed from its repository on first use, then cached.
+						// Its avro dependency too: iceberg would auto-install it from this build's local
+						// extension repository (default_autoinstall_repository), which holds no avro.
+						Exec(con, "INSTALL avro");
 						Exec(con, "INSTALL iceberg");
 						Exec(con, "LOAD iceberg");
 						iceberg_loaded = true;
@@ -399,8 +402,7 @@ void LockDown(duckdb::Connection &con, const Config &config) {
 		}
 		list += (list.empty() ? "" : ", ") + SqlLiteral(dir);
 	}
-	// Secrets in memory only: the stored-secrets directory is outside the allowed ones.
-	Exec(con, "SET allow_persistent_secrets = false");
+	// allow_persistent_secrets is turned off in main, before the database opens.
 	Exec(con, "SET allowed_directories = [" + list + "]");
 	Exec(con, "SET enable_external_access = false");
 	Exec(con, "SET lock_configuration = true");

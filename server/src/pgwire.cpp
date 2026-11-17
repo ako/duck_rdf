@@ -48,7 +48,11 @@ bool ReadExact(int fd, void *buffer, size_t n) {
 
 bool WriteAll(int fd, const char *data, size_t n) {
 	while (n > 0) {
+#ifdef MSG_NOSIGNAL
 		auto sent = ::send(fd, data, n, MSG_NOSIGNAL);
+#else
+		auto sent = ::send(fd, data, n, 0); // macOS: SO_NOSIGPIPE is set on the socket instead
+#endif
 		if (sent <= 0) {
 			return false;
 		}
@@ -825,6 +829,7 @@ private:
 	int fd_;
 	int32_t pid_ = 0;
 	int32_t secret_ = 0;
+	std::string database_; // the database the client asked for, which current_database() reports
 	std::unique_ptr<duckdb::Connection> con_;
 	Writer out_;
 	bool failed_transaction_ = false;
@@ -952,6 +957,9 @@ bool PgSession::Startup() {
 			return false;
 		}
 		con_ = std::make_unique<duckdb::Connection>(server_.Database());
+		// PostgreSQL's default database is the user name. Clients such as DataGrip check that
+		// current_database() is the one they connected to.
+		database_ = params.count("database") && !params["database"].empty() ? params["database"] : params["user"];
 		out_.Begin('R');
 		out_.Int32(0); // AuthenticationOk
 		out_.End();
@@ -986,8 +994,9 @@ std::shared_ptr<PgSession::Statement> PgSession::Prepare(const std::string &sql,
 	statement->special = Classify(sql);
 	statement->param_oids = std::move(param_oids);
 	if (statement->special.kind == Special::Kind::NONE) {
-		auto rewritten = RewriteCatalogQuery(sql);
-		statement->prepared = con_->Prepare(rewritten ? *rewritten : sql);
+		auto session_sql = ReplaceSessionFunctions(sql, database_, pid_);
+		auto rewritten = RewriteCatalogQuery(session_sql);
+		statement->prepared = con_->Prepare(rewritten ? *rewritten : session_sql);
 		if (statement->prepared->HasError()) {
 			SendErrorFrom(statement->prepared->GetErrorObject());
 			return nullptr;
@@ -1496,6 +1505,9 @@ void PgServer::AcceptLoop() {
 		}
 		int yes = 1;
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+#ifdef SO_NOSIGPIPE
+		setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
+#endif
 		std::thread([this, fd]() {
 			PgSession session(*this, fd);
 			session.Run();
