@@ -78,6 +78,11 @@ The PostgreSQL JDBC driver's metadata calls (`getTables`, `getColumns`, `getPrim
 `getTypeInfo`, foreign keys) are answered from DuckDB's catalog with PostgreSQL types; they list
 the server's own views and tables. psql's backslash commands (`\dt`) do not work yet.
 
+DataGrip connects and runs queries over the PostgreSQL endpoint, but its schema browser reads far
+more of PostgreSQL's catalog than DuckDB has, and DataGrip 2026.1 no longer offers "Introspect using
+JDBC metadata" for PostgreSQL data sources. For DataGrip, use a DuckDB data source over Quack
+instead (below): DataGrip then browses the server as DuckDB.
+
 SQL from DuckDB:
 
 ```sql
