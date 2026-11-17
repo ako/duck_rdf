@@ -1,6 +1,0 @@
-// Generated at configure time from server/ui/index.html: the web UI served at /.
-#pragma once
-
-namespace dgl {
-inline const char *UI_PAGE = R"UIHTML(@UI_HTML@)UIHTML";
-} // namespace dgl
