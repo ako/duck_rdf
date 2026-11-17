@@ -994,7 +994,7 @@ std::shared_ptr<PgSession::Statement> PgSession::Prepare(const std::string &sql,
 	statement->special = Classify(sql);
 	statement->param_oids = std::move(param_oids);
 	if (statement->special.kind == Special::Kind::NONE) {
-		auto session_sql = ReplaceSessionFunctions(sql, database_, pid_);
+		auto session_sql = ReplaceCatalogGaps(sql, database_, pid_);
 		auto rewritten = RewriteCatalogQuery(session_sql);
 		statement->prepared = con_->Prepare(rewritten ? *rewritten : session_sql);
 		if (statement->prepared->HasError()) {

@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <regex>
+#include <set>
 #include <vector>
 
 namespace dgl {
@@ -142,35 +143,110 @@ std::string PgTypeOidCase(const std::string &e) {
 	       e + " = 'UUID' THEN 2950 WHEN " + e + " = 'VARCHAR' THEN 1043 ELSE 25 END)::INTEGER";
 }
 
-std::string ReplaceSessionFunctions(const std::string &sql, const std::string &database, int32_t pid) {
+namespace {
+
+// Replaces each match of pattern in sql by replacement(match), literally.
+template <class F>
+std::string ReplaceEach(const std::string &sql, const std::regex &pattern, F replacement) {
+	std::string out;
+	size_t last = 0;
+	for (auto it = std::sregex_iterator(sql.begin(), sql.end(), pattern); it != std::sregex_iterator(); ++it) {
+		auto start = static_cast<size_t>(it->position());
+		auto end = start + static_cast<size_t>(it->length());
+		out += sql.substr(last, start - last) + replacement(*it, end);
+		last = end;
+	}
+	return out + sql.substr(last);
+}
+
+// Whether a FROM item ending at `end` in sql is followed by an alias of its own.
+bool HasAlias(const std::string &sql, size_t end) {
+	static const std::regex next(R"(^\s+([A-Za-z_][A-Za-z_0-9]*|"))");
+	std::smatch m;
+	auto rest = sql.substr(end);
+	if (!std::regex_search(rest, m, next)) {
+		return false;
+	}
+	auto word = m[1].str();
+	for (auto &c : word) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	static const std::set<std::string> keywords = {
+	    "where", "join",  "left",   "right", "inner",     "outer",  "full",   "cross", "on",     "order",
+	    "group", "limit", "offset", "union", "intersect", "except", "having", "window", "natural", "using"};
+	return keywords.count(word) == 0;
+}
+
+} // namespace
+
+std::string ReplaceCatalogGaps(const std::string &sql, const std::string &database, int32_t pid) {
 	// Cheap test first: almost every query has none of these.
 	auto lower = sql;
 	for (auto &c : lower) {
 		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 	}
-	if (lower.find("current_database") == std::string::npos && lower.find("pg_backend_pid") == std::string::npos &&
-	    lower.find("pg_locks") == std::string::npos) {
+	static const char *markers[] = {"current_database", "pg_backend_pid", "pg_locks",        "pg_database",
+	                                "pg_stat_ssl",      "pg_shdescription", "pg_get_userbyid", "age"};
+	bool any = false;
+	for (auto marker : markers) {
+		any = any || lower.find(marker) != std::string::npos;
+	}
+	if (!any) {
 		return sql;
 	}
+	auto db = Quote(database);
+	auto session_pid = std::to_string(pid);
+	// Functions.
 	static const std::regex current_database(R"(\b(?:pg_catalog\s*\.\s*)?current_database\s*\(\s*\))",
 	                                         std::regex::icase);
 	static const std::regex backend_pid(R"(\b(?:pg_catalog\s*\.\s*)?pg_backend_pid\s*\(\s*\))", std::regex::icase);
-	static const std::regex locks(R"(\b(?:pg_catalog\s*\.\s*)?pg_locks\b)", std::regex::icase);
-	// No locks are reported: DuckDB's concurrency control is optimistic.
-	static const std::string empty_locks =
-	    "(SELECT NULL::VARCHAR AS locktype, NULL::INTEGER AS database, NULL::INTEGER AS relation, "
-	    "NULL::INTEGER AS page, NULL::SMALLINT AS tuple, NULL::VARCHAR AS virtualxid, NULL::BIGINT AS transactionid, "
-	    "NULL::INTEGER AS classid, NULL::INTEGER AS objid, NULL::SMALLINT AS objsubid, "
-	    "NULL::VARCHAR AS virtualtransaction, NULL::INTEGER AS pid, NULL::VARCHAR AS mode, NULL::BOOLEAN AS granted, "
-	    "NULL::BOOLEAN AS fastpath, NULL::TIMESTAMPTZ AS waitstart WHERE false)";
-	// regex_replace reads $ in the replacement as a group reference; $$ is a literal $.
-	std::string name;
-	for (char c : Quote(database)) {
-		name += c == '$' ? std::string("$$") : std::string(1, c);
+	static const std::regex userbyid(R"(\b(?:pg_catalog\s*\.\s*)?pg_get_userbyid\s*\([^()]*\))", std::regex::icase);
+	// age() of a transaction id: DuckDB's age() takes timestamps only. No transaction id is ever old.
+	static const std::regex xid_age(R"re(\b(?:pg_catalog\s*\.\s*)?age\s*\(\s*[A-Za-z_0-9."]*(?:xid|transactionid|xmin)"?\s*\))re",
+	                                std::regex::icase);
+	auto out = ReplaceEach(sql, current_database, [&](const std::smatch &, size_t) { return db; });
+	out = ReplaceEach(out, backend_pid, [&](const std::smatch &, size_t) { return session_pid; });
+	out = ReplaceEach(out, userbyid, [](const std::smatch &, size_t) { return std::string("current_user"); });
+	out = ReplaceEach(out, xid_age, [](const std::smatch &, size_t) { return std::string("0::INTEGER"); }); // not a bare 0: ORDER BY 0 is a position
+	// Catalog views DuckDB lacks, or (pg_database) lists DuckDB's own databases in.
+	struct View {
+		const char *name;
+		std::string query;
+	};
+	const View views[] = {
+	    // The database the client connected to, and no other.
+	    {"pg_database",
+	     "(SELECT 1::INTEGER AS oid, " + db + " AS datname, 10::INTEGER AS datdba, 6::INTEGER AS encoding, "
+	     "'c' AS datlocprovider, false AS datistemplate, true AS datallowconn, -1::INTEGER AS datconnlimit, "
+	     "0::BIGINT AS datfrozenxid, 0::BIGINT AS datminmxid, 1663::INTEGER AS dattablespace, 'C' AS datcollate, "
+	     "'C' AS datctype, NULL::VARCHAR AS daticulocale, NULL::VARCHAR AS daticurules, NULL::VARCHAR AS "
+	     "datcollversion, NULL::VARCHAR[] AS datacl)"},
+	    // No locks: DuckDB's concurrency control is optimistic.
+	    {"pg_locks",
+	     "(SELECT NULL::VARCHAR AS locktype, NULL::INTEGER AS database, NULL::INTEGER AS relation, "
+	     "NULL::INTEGER AS page, NULL::SMALLINT AS tuple, NULL::VARCHAR AS virtualxid, NULL::BIGINT AS transactionid, "
+	     "NULL::INTEGER AS classid, NULL::INTEGER AS objid, NULL::SMALLINT AS objsubid, "
+	     "NULL::VARCHAR AS virtualtransaction, NULL::INTEGER AS pid, NULL::VARCHAR AS mode, NULL::BOOLEAN AS granted, "
+	     "NULL::BOOLEAN AS fastpath, NULL::TIMESTAMPTZ AS waitstart WHERE false)"},
+	    // This session, without SSL (the endpoint refuses it).
+	    {"pg_stat_ssl",
+	     "(SELECT " + session_pid + "::INTEGER AS pid, false AS ssl, NULL::VARCHAR AS version, NULL::VARCHAR AS cipher, "
+	     "NULL::INTEGER AS bits, NULL::VARCHAR AS client_dn, NULL::DECIMAL(38,0) AS client_serial, "
+	     "NULL::VARCHAR AS issuer_dn)"},
+	    // No comments on databases or roles.
+	    {"pg_shdescription",
+	     "(SELECT NULL::INTEGER AS objoid, NULL::INTEGER AS classoid, NULL::VARCHAR AS description WHERE false)"},
+	};
+	for (auto &view : views) {
+		if (lower.find(view.name) == std::string::npos) {
+			continue;
+		}
+		std::regex pattern(std::string(R"(\b(?:pg_catalog\s*\.\s*)?)") + view.name + R"(\b(?!\s*[.(]))", std::regex::icase);
+		out = ReplaceEach(out, pattern, [&](const std::smatch &, size_t end) {
+			return HasAlias(out, end) ? view.query : view.query + " AS " + view.name;
+		});
 	}
-	auto out = std::regex_replace(sql, current_database, name);
-	out = std::regex_replace(out, backend_pid, std::to_string(pid));
-	return std::regex_replace(out, locks, empty_locks);
+	return out;
 }
 
 std::optional<std::string> RewriteCatalogQuery(const std::string &sql) {
