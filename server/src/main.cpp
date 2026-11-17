@@ -67,6 +67,7 @@ Usage: duckgraphlake [options] [DATA_DIR]
       --kafka-port PORT  Kafka-compatible endpoint for producers (default 9092; 0 turns it off): each
                          topic is written to an Iceberg table under warpstream/_tableflow/
   -t, --tableflow FILE   a WarpStream Tableflow YAML file: table names and JSON schemas per topic
+      --no-kafka-cdc     keep change events (Debezium/Mendix CDC) as raw values: no column per field
       --token TOKEN      access token (or DUCKGRAPHLAKE_TOKEN); required unless on a loopback address
       --require-token    SPARQL and MCP also need the token on a loopback address
       --no-lock-down     leave file access and settings open to SQL clients
@@ -272,6 +273,7 @@ int main(int argc, char **argv) {
 	Config config;
 	std::string data_dir_arg, mapping_arg, ontology_arg, host_arg, token_arg, init_arg;
 	int http_port = 0, sql_port = 0, pg_port = -1, kafka_port = -1;
+	bool no_kafka_cdc = false;
 	std::string tableflow_arg;
 	bool no_lock_down = false, require_token = false;
 	try {
@@ -303,6 +305,8 @@ int main(int argc, char **argv) {
 				kafka_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "-t" || a == "--tableflow") {
 				tableflow_arg = NeedValue(i, argc, argv);
+			} else if (a == "--no-kafka-cdc") {
+				no_kafka_cdc = true;
 			} else if (a == "--sql-port") {
 				sql_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "--token") {
@@ -349,6 +353,9 @@ int main(int argc, char **argv) {
 	}
 	if (pg_port >= 0) {
 		config.pg_port = pg_port;
+	}
+	if (no_kafka_cdc) {
+		config.kafka_cdc = false;
 	}
 	if (kafka_port >= 0) {
 		config.kafka_port = kafka_port;
@@ -550,6 +557,7 @@ int main(int argc, char **argv) {
 			options.cluster = config.kafka_cluster;
 			options.default_partitions = config.kafka_partitions;
 			options.flush_ms = config.kafka_flush_ms;
+			options.unwrap_cdc = config.kafka_cdc;
 			if (!config.tableflow_config.empty()) {
 				options.tableflow = LoadTableflowConfig(config.tableflow_config);
 				Log("tableflow: " + config.tableflow_config + " (" + std::to_string(options.tableflow.tables.size()) +
@@ -565,8 +573,12 @@ int main(int argc, char **argv) {
 				    try {
 					    duckdb::Connection view_con(db);
 					    Exec(view_con, "CREATE OR REPLACE VIEW " + SqlIdent(table) + " AS " + IcebergView(folder));
+					    auto current = ChangeEventCurrentView(view_con, table);
 					    std::lock_guard<std::mutex> lock(exposed_mutex);
 					    exposed.push_back({"iceberg", table, folder});
+					    if (!current.empty()) {
+						    exposed.push_back({"view", current, "latest state per key of " + table});
+					    }
 					    api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
 					    Log("kafka: table " + table + " is queryable");
 				    } catch (std::exception &ex) {

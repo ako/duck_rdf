@@ -25,6 +25,24 @@ public class KafkaProduceTest {
     r.headers().add(new RecordHeader("ce_id", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8)));
     return r;
   }
+  static String order(long id, long orderId, String customer, String price, boolean revised) {
+    return "{\"id\":" + id + ",\"OrderId\":" + orderId + ",\"CustomerName\":\"" + customer + "\",\"Price\":\"" + price +
+        "\",\"Order_Customer\":[7],\"PlacedOn\":1794940282450" + (revised ? ",\"Note\":\"rush\"" : "") + "}";
+  }
+  static String change(String op, String before, String after) {
+    boolean revised = (after != null && after.contains("Note")) || (before != null && before.contains("Note"));
+    String fields = "[{\"field\":\"id\",\"type\":\"int64\"},{\"field\":\"OrderId\",\"type\":\"int64\"},"
+        + "{\"field\":\"CustomerName\",\"type\":\"string\"},"
+        + "{\"field\":\"Price\",\"name\":\"org.apache.kafka.connect.data.Decimal\",\"parameters\":{\"connect.decimal.precision\":\"28\",\"scale\":\"8\"},\"type\":\"bytes\"},"
+        + "{\"field\":\"Order_Customer\",\"items\":{\"type\":\"int64\"},\"type\":\"array\"},"
+        + "{\"field\":\"PlacedOn\",\"name\":\"org.apache.kafka.connect.data.Timestamp\",\"type\":\"int64\"}"
+        + (revised ? ",{\"field\":\"Note\",\"type\":\"string\"}" : "") + "]";
+    String schema = "{\"type\":\"struct\",\"name\":\"Order\",\"fields\":[{\"field\":\"before\",\"type\":\"struct\",\"optional\":true,\"fields\":" + fields
+        + "},{\"field\":\"after\",\"type\":\"struct\",\"optional\":true,\"fields\":" + fields + "},{\"field\":\"op\",\"type\":\"string\"}]}";
+    String payload = "{\"before\":" + before + ",\"after\":" + after + ",\"op\":\"" + op + "\",\"ts_ms\":1794940282647,"
+        + "\"source\":{\"connector\":\"mendix_event_broker_cdc\",\"name\":\"mendix\",\"snapshot\":false,\"sequence\":1,\"ts_ms\":1794940282450,\"txId\":\"tx-1\",\"version\":\"11.16.1\"}}";
+    return "{\"schema\":" + schema + ",\"payload\":" + payload + "}";
+  }
   public static void main(String[] a) throws Exception {
     String bootstrap = a[0];
     int n = Integer.parseInt(a[1]);
@@ -45,6 +63,22 @@ public class KafkaProduceTest {
       RecordMetadata m = null;
       for (int i = 0; i < 10; i++) m = p.send(event("mendix.events", null, "{\"entity\":\"Sales.Order\",\"change\":\"update\",\"n\":" + i + "}", "EntityChanged")).get();
       System.out.println("mendix.events: last offset " + m.offset());
+    }
+    if (n == 1000) {
+      // Change events as the Mendix runtime's CDC publishes them (Debezium envelope, Kafka Connect
+      // JSON with the schema embedded): create two orders, update one, delete the other, then one
+      // more create of a later revision that adds an attribute.
+      try (KafkaProducer<String, String> p = producer(bootstrap, "none")) {
+        RecordMetadata m = null;
+        String t = "cdc.TestApp.Order.1.local";
+        m = p.send(new ProducerRecord<>(t, "11", change("c", null, order(11, 101, "Ada", "O05+wA==", false)))).get();
+        m = p.send(new ProducerRecord<>(t, "12", change("c", null, order(12, 102, "Bob", "dzWUAA==", false)))).get();
+        m = p.send(new ProducerRecord<>(t, "11", change("u", order(11, 101, "Ada", "O05+wA==", false), order(11, 101, "Ada", "SoF8gA==", false)))).get();
+        m = p.send(new ProducerRecord<>(t, "12", change("d", order(12, 102, "Bob", "dzWUAA==", false), null))).get();
+        Thread.sleep(2500); // committed first: the new attribute then adds a column to the table
+        m = p.send(new ProducerRecord<>(t, "13", change("c", null, order(13, 103, "Cy", "/1aJMA==", true)))).get();
+        System.out.println("cdc: last offset " + m.offset());
+      }
     }
     try (KafkaProducer<String, String> p = producer(bootstrap, "snappy")) {
       try { p.send(event("orders", "x", "{}", "t")).get(); System.out.println("snappy: unexpectedly accepted"); }

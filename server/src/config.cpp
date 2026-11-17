@@ -108,6 +108,9 @@ void LoadConfigFile(const std::string &path, Config &config) {
 		config.kafka_flush_ms = static_cast<int>(*p);
 	}
 	Read(table, "kafka", "tableflow", config.tableflow_config);
+	if (auto b = table["kafka"]["cdc"].value<bool>()) {
+		config.kafka_cdc = *b;
+	}
 	config.tableflow_config = ResolvePath(config, config.tableflow_config);
 	Read(table, "odata", "enabled", config.odata_enabled);
 	ReadTri(table, "odata", "anonymous", config.odata_anonymous);

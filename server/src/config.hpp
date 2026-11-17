@@ -77,6 +77,7 @@ struct Config {
 	int kafka_partitions = 1;
 	int kafka_flush_ms = 1000;
 	std::string tableflow_config; // a Tableflow YAML file
+	bool kafka_cdc = true;        // change events get a column per field, and a <table>_current view
 
 	// [mcp]
 	bool mcp_enabled = true;

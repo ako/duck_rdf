@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Kafka endpoint through the Apache Kafka Java client (3.9, as in the Mendix runtime): produce with
 # the client's defaults (idempotent, acks=all) and gzip/zstd, then check the Iceberg tables shaped like
-# WarpStream Tableflow's, a restart, and a crash before a commit. Needs Java and Maven; checks
+# WarpStream Tableflow's, change events unwrapped into columns, headers, a restart, and a crash before a commit. Needs Java and Maven; checks
 # librdkafka too when Python's confluent-kafka is installed.
 # Usage: server/test/kafka_test.sh
 set -uo pipefail
@@ -19,7 +19,7 @@ start() {
 trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$WORK"' EXIT
 status=0
 start
-java -cp "$WORK/lib/*:$WORK" KafkaProduceTest 127.0.0.1:19092 1000 2>/dev/null | grep -E "^(orders|mendix|snappy)"
+java -cp "$WORK/lib/*:$WORK" KafkaProduceTest 127.0.0.1:19092 1000 2>/dev/null | grep -E "^(orders|mendix|cdc|snappy)"
 sleep 3
 python3 "$HERE/kafka/check.py" first || status=1
 kill $PID; wait $PID 2>/dev/null
