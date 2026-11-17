@@ -1,5 +1,7 @@
 #include "kafka_lake.hpp"
 
+#include "kafka_cdc.hpp"
+
 #include "log.hpp"
 #include "setup.hpp"
 #include "sparql.hpp"
@@ -20,8 +22,10 @@ namespace fs = std::filesystem;
 namespace {
 
 const char *NAMESPACE = "tableflow";
-const char *WARPSTREAM_TYPE =
-    "STRUCT(\"partition\" INTEGER, \"offset\" BIGINT, \"key\" BLOB, \"value\" BLOB, \"timestamp\" TIMESTAMP)";
+// Tableflow's warpstream struct, plus the record's headers (text values; a value that is not UTF-8
+// is NULL). Tables written before headers were kept have no headers field and get none.
+const char *WARPSTREAM_TYPE = "STRUCT(\"partition\" INTEGER, \"offset\" BIGINT, \"key\" BLOB, \"value\" BLOB, "
+                              "\"timestamp\" TIMESTAMP, headers MAP(VARCHAR, VARCHAR))";
 
 // A Tableflow type name (field_type_remapping) as a DuckDB type.
 std::string TableflowType(const std::string &type) {
@@ -266,6 +270,10 @@ void KafkaLake::EnsureOpen() {
 	Exec(*append_con_, "CREATE TABLE IF NOT EXISTS kafka_topics (name VARCHAR PRIMARY KEY, partitions INTEGER)");
 	Exec(*append_con_, "CREATE TABLE IF NOT EXISTS kafka_buffer (seq BIGINT, topic VARCHAR, \"partition\" INTEGER, "
 	                   "\"offset\" BIGINT, \"timestamp\" TIMESTAMP, \"key\" BLOB, \"value\" BLOB)");
+	// Added later: a buffer file from before them gets the columns, NULL for what it holds.
+	Exec(*append_con_, "ALTER TABLE kafka_buffer ADD COLUMN IF NOT EXISTS headers MAP(VARCHAR, BLOB)");
+	Exec(*append_con_, "ALTER TABLE kafka_buffer ADD COLUMN IF NOT EXISTS cdc_row VARCHAR");
+	Exec(*append_con_, "ALTER TABLE kafka_buffer ADD COLUMN IF NOT EXISTS cdc_columns VARCHAR");
 	for (auto &row : Column(*append_con_, "SELECT name || '\x1f' || partitions FROM kafka_topics")) {
 		auto sep = row.find('\x1f');
 		topics_[row.substr(0, sep)] = std::stoi(row.substr(sep + 1));
@@ -345,7 +353,32 @@ int64_t KafkaLake::Append(const std::string &topic, int32_t partition, const std
 	auto base = NextOffset(topic, partition);
 	duckdb::Appender appender(*append_con_, "kafka_buffer");
 	auto offset = base;
+	bool unwrap = options_.unwrap_cdc && !Configured(topic);
 	for (auto &r : records) {
+		duckdb::Value headers(duckdb::LogicalType::MAP(duckdb::LogicalType::VARCHAR, duckdb::LogicalType::BLOB));
+		if (!r.headers.empty()) {
+			// A map: a key repeated keeps its last value.
+			std::map<std::string, std::optional<std::string>> last;
+			std::vector<std::string> order;
+			for (auto &h : r.headers) {
+				if (!last.count(h.first)) {
+					order.push_back(h.first);
+				}
+				last[h.first] = h.second;
+			}
+			duckdb::vector<duckdb::Value> keys, values;
+			for (auto &k : order) {
+				keys.push_back(duckdb::Value(k));
+				values.push_back(last[k] ? duckdb::Value::BLOB_RAW(*last[k])
+				                         : duckdb::Value(duckdb::LogicalType::BLOB));
+			}
+			headers = duckdb::Value::MAP(duckdb::LogicalType::VARCHAR, duckdb::LogicalType::BLOB, std::move(keys),
+			                             std::move(values));
+		}
+		std::optional<ChangeEvent> change;
+		if (unwrap && r.value) {
+			change = UnwrapChangeEvent(*r.value);
+		}
 		appender.BeginRow();
 		appender.Append<int64_t>(next_seq_++);
 		appender.Append(duckdb::Value(topic));
@@ -354,6 +387,21 @@ int64_t KafkaLake::Append(const std::string &topic, int32_t partition, const std
 		appender.Append(duckdb::Value::TIMESTAMP(duckdb::Timestamp::FromEpochMs(r.timestamp_ms)));
 		appender.Append(r.key ? duckdb::Value::BLOB_RAW(*r.key) : duckdb::Value(duckdb::LogicalType::BLOB));
 		appender.Append(r.value ? duckdb::Value::BLOB_RAW(*r.value) : duckdb::Value(duckdb::LogicalType::BLOB));
+		appender.Append(headers);
+		if (change) {
+			Json columns = Json::Array();
+			for (auto &c : change->columns) {
+				Json pair = Json::Array();
+				pair.Push(Json(c.first));
+				pair.Push(Json(c.second));
+				columns.Push(std::move(pair));
+			}
+			appender.Append(duckdb::Value(change->row));
+			appender.Append(duckdb::Value(columns.Dump()));
+		} else {
+			appender.Append(duckdb::Value(duckdb::LogicalType::VARCHAR));
+			appender.Append(duckdb::Value(duckdb::LogicalType::VARCHAR));
+		}
 		appender.EndRow();
 	}
 	appender.Close(); // committed to the buffer file: safe to acknowledge
@@ -402,9 +450,55 @@ void KafkaLake::Flush() {
 	}
 }
 
+KafkaLake::Columns KafkaLake::TableColumns(duckdb::Connection &con, const std::string &qualified) {
+	Columns columns;
+	for (auto &row : Column(con, "SELECT column_name || '\x1f' || column_type FROM (DESCRIBE " + qualified + ")")) {
+		auto sep = row.find('\x1f');
+		columns.emplace_back(row.substr(0, sep), row.substr(sep + 1));
+	}
+	return columns;
+}
+
+namespace {
+
+// The fields of the change events buffered for a topic, in the order they first appear.
+KafkaLake::Columns BufferedChangeColumns(duckdb::Connection &con, const std::string &topic, int64_t up_to_seq) {
+	KafkaLake::Columns columns;
+	std::set<std::string> seen;
+	for (auto &text : Column(con, "SELECT cdc_columns FROM kafka_buffer WHERE topic = " + SqlLiteral(topic) +
+	                                  " AND seq <= " + std::to_string(up_to_seq) +
+	                                  " AND cdc_columns IS NOT NULL GROUP BY cdc_columns ORDER BY min(seq)")) {
+		auto parsed = Json::Parse(text); // not in the for: a temporary's member would dangle
+		for (auto &pair : parsed.Items()) {
+			auto name = pair.Items()[0].AsString();
+			if (seen.insert(name).second) {
+				columns.emplace_back(name, pair.Items()[1].AsString());
+			}
+		}
+	}
+	return columns;
+}
+
+const std::string *ColumnType(const KafkaLake::Columns &columns, const std::string &name) {
+	for (auto &c : columns) {
+		if (c.first == name) {
+			return &c.second;
+		}
+	}
+	return nullptr;
+}
+
+} // namespace
+
 bool KafkaLake::FlushTopic(duckdb::Connection &con, const std::string &topic, int64_t up_to_seq) {
 	static std::mutex logged_mutex;
 	static std::set<std::string> logged;
+	auto log_once = [&](const std::string &message) {
+		std::lock_guard<std::mutex> lock(logged_mutex);
+		if (logged.insert(message).second) {
+			Log(message);
+		}
+	};
 	auto table = TableFor(topic);
 	auto configured = Configured(topic);
 	auto qualified = std::string("lake.") + NAMESPACE + "." + SqlIdent(table);
@@ -412,29 +506,80 @@ bool KafkaLake::FlushTopic(duckdb::Connection &con, const std::string &topic, in
 		if (!table_ready_[table]) {
 			auto existing = catalog_.Tables(NAMESPACE);
 			if (std::find(existing.begin(), existing.end(), table) == existing.end()) {
-				std::string columns;
+				Columns columns;
 				if (configured) {
-					for (auto &c : configured->columns) {
-						columns += SqlIdent(c.first) + " " + c.second + ", ";
+					columns = configured->columns;
+				} else if (options_.unwrap_cdc) {
+					// A topic of change events: a column per field of the entity, and a cdc struct.
+					columns = BufferedChangeColumns(con, topic, up_to_seq);
+					if (!columns.empty()) {
+						columns.emplace_back("cdc", CDC_TYPE);
 					}
 				}
-				Exec(con, "CREATE TABLE " + qualified + " (" + columns + "warpstream " + WARPSTREAM_TYPE + ")");
+				std::string list;
+				for (auto &c : columns) {
+					list += SqlIdent(c.first) + " " + c.second + ", ";
+				}
+				Exec(con, "CREATE TABLE " + qualified + " (" + list + "warpstream " + WARPSTREAM_TYPE + ")");
 			}
+			table_columns_[table] = TableColumns(con, qualified);
 			table_ready_[table] = true;
 		}
+		auto columns = table_columns_[table];
+		auto warpstream_type = ColumnType(columns, "warpstream");
+		bool has_headers = warpstream_type && warpstream_type->find("headers") != std::string::npos;
+		bool cdc = !configured && options_.unwrap_cdc && ColumnType(columns, "cdc") != nullptr;
 		std::string fields;
-		if (configured && !configured->columns.empty()) {
+		if (cdc) {
+			// Fields the entity gained since the table was made (a minor revision of a CDC service
+			// adds attributes) become new columns.
+			bool altered = false;
+			for (auto &c : BufferedChangeColumns(con, topic, up_to_seq)) {
+				if (ColumnType(columns, c.first)) {
+					continue;
+				}
+				try {
+					Exec(con, "ALTER TABLE " + qualified + " ADD COLUMN " + SqlIdent(c.first) + " " + c.second);
+					altered = true;
+				} catch (std::exception &ex) {
+					log_once("kafka: " + table + ": no column for the new field " + c.first +
+					         " (kept in the raw "
+					         "value): " +
+					         duckdb::ErrorData(ex).RawMessage());
+				}
+			}
+			if (altered) {
+				columns = table_columns_[table] = TableColumns(con, qualified);
+			}
+			std::string structure = "{";
+			for (auto &c : columns) {
+				if (c.first == "warpstream") {
+					continue;
+				}
+				if (structure.size() > 1) {
+					structure += ",";
+				}
+				JsonQuote(c.first, structure);
+				structure += ":";
+				JsonQuote(c.second, structure);
+			}
+			structure += "}";
+			fields = "unnest(json_transform(cdc_row, " + SqlLiteral(structure) + ")), ";
+		} else if (configured && !configured->columns.empty()) {
 			// The record's JSON value, parsed by the table's schema. A value that is not JSON, or not of
 			// the schema's shape, leaves the fields NULL; the raw value stays in warpstream.value.
 			fields = "unnest(CASE WHEN json_valid(TRY(decode(\"value\"))) THEN json_transform(decode(\"value\"), " +
 			         SqlLiteral(configured->json_structure) + ") END), ";
 		}
 		auto raw_value = configured && configured->skip_raw_values ? "NULL::BLOB" : "\"value\"";
-		Exec(con,
-		     "INSERT INTO " + qualified + " BY NAME SELECT " + fields +
-		         "{'partition': \"partition\", 'offset': \"offset\", 'key': \"key\", 'value': " + raw_value +
-		         ", 'timestamp': \"timestamp\"} AS warpstream FROM kafka_buffer WHERE topic = " + SqlLiteral(topic) +
-		         " AND seq <= " + std::to_string(up_to_seq) + " ORDER BY \"partition\", \"offset\"");
+		std::string headers = has_headers ? ", 'headers': map_from_entries(list_transform(map_entries(headers), "
+		                                    "lambda e: {'key': e.key, 'value': TRY(decode(e.value))}))"
+		                                  : "";
+		Exec(con, "INSERT INTO " + qualified + " BY NAME SELECT " + fields +
+		              "{'partition': \"partition\", 'offset': \"offset\", 'key': \"key\", 'value': " + raw_value +
+		              ", 'timestamp': \"timestamp\"" + headers +
+		              "} AS warpstream FROM kafka_buffer WHERE topic = " + SqlLiteral(topic) +
+		              " AND seq <= " + std::to_string(up_to_seq) + " ORDER BY \"partition\", \"offset\"");
 		Exec(con, "DELETE FROM kafka_buffer WHERE topic = " + SqlLiteral(topic) +
 		              " AND seq <= " + std::to_string(up_to_seq));
 		if (!table_announced_[table]) {
@@ -444,10 +589,7 @@ bool KafkaLake::FlushTopic(duckdb::Connection &con, const std::string &topic, in
 		return true;
 	} catch (std::exception &ex) {
 		duckdb::ErrorData error(ex);
-		std::lock_guard<std::mutex> lock(logged_mutex);
-		if (logged.insert(table + error.RawMessage()).second) {
-			Log("kafka: writing " + table + " failed (kept in the buffer, retried): " + error.RawMessage());
-		}
+		log_once("kafka: writing " + table + " failed (kept in the buffer, retried): " + error.RawMessage());
 		table_ready_[table] = false;
 		return false;
 	}

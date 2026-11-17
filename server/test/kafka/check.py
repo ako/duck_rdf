@@ -37,6 +37,19 @@ if phase == "first":
     cols = [r[0] for r in sql('SELECT column_name FROM (DESCRIBE "local__orders")')]
     check("the table has the schema's columns and the warpstream struct",
           cols == ["id", "customer", "amount", "placed", "lines", "warpstream"], cols)
+    headers = sql('SELECT warpstream.headers[\'ce_type\'], warpstream.headers[\'ce_specversion\'] FROM "local__mendix.events" LIMIT 1')
+    check("record headers are kept in warpstream.headers", headers == [["EntityChanged", "1.0"]], headers)
+    cdc = sql('SELECT id, "OrderId", "CustomerName", "Price"::VARCHAR, "Order_Customer", "PlacedOn"::VARCHAR, "Note", cdc.op, '
+              'cdc.tx_id, cdc.connector FROM "local__cdc.TestApp.Order.1.local" ORDER BY warpstream."offset"')
+    check("change events: a column per field (decimal, list, timestamp), the deleted row from before, a cdc struct",
+          cdc == [[11, 101, "Ada", "9.95000000", "[7]", "2026-11-17 18:31:22.45", None, "c", "tx-1", "mendix_event_broker_cdc"],
+                  [12, 102, "Bob", "20.00000000", "[7]", "2026-11-17 18:31:22.45", None, "c", "tx-1", "mendix_event_broker_cdc"],
+                  [11, 101, "Ada", "12.50000000", "[7]", "2026-11-17 18:31:22.45", None, "u", "tx-1", "mendix_event_broker_cdc"],
+                  [12, 102, "Bob", "20.00000000", "[7]", "2026-11-17 18:31:22.45", None, "d", "tx-1", "mendix_event_broker_cdc"],
+                  [13, 103, "Cy", "-0.11106000", "[7]", "2026-11-17 18:31:22.45", "rush", "c", "tx-1", "mendix_event_broker_cdc"]], cdc)
+    current = sql('SELECT id, "Price"::VARCHAR, "Note" FROM "local__cdc.TestApp.Order.1.local_current" ORDER BY id')
+    check("the _current view has the latest row per key, without deleted ones",
+          current == [[11, "12.50000000", None], [13, "-0.11106000", "rush"]], current)
 elif phase == "restarted":
     check("offsets carry on after a restart (12 more records: 1002..1013; each run sends two that do not parse)", orders == [1014, 1014, 0, 1013, 1010], orders)
 elif phase == "crashed":

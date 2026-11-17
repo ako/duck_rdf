@@ -54,6 +54,8 @@ outbox) to a WarpStream agent, and WarpStream Tableflow writes the topics to Ice
 data lake. Locally, `duckgraphlake` stands in for both: point the app's Kafka setting at it (for
 Business Events, the `ServerUrl` constant: `localhost:9092`) and each topic becomes an Iceberg table in
 the data folder, queryable over SQL, SPARQL (with a mapping), OData and the web UI within a second.
+For entity CDC, set the configuration's Kafka bootstrap servers (the `Kafka.BootstrapServers` runtime
+setting) to the same address.
 
 ```bash
 duckgraphlake ./data --tableflow tableflow.yaml
@@ -80,12 +82,30 @@ duckgraphlake ./data --tableflow tableflow.yaml
     - `integer` → BIGINT, `number` → DOUBLE, `boolean` → BOOLEAN;
     - `string` → VARCHAR, or DATE, TIMESTAMPTZ, TIME or UUID by `format`;
     - objects → STRUCT (MAP with `additionalProperties`), arrays → LIST.
-  - **Metadata:** a `warpstream` STRUCT(partition, offset, key, value, timestamp).
+  - **Metadata:** a `warpstream` STRUCT(partition, offset, key, value, timestamp, headers). `headers`
+    is a MAP(VARCHAR, VARCHAR) of the record's headers: for a Mendix business event,
+    `warpstream.headers['ce_type']` is the event's type (its message name) and `ce_subject` its
+    subject. A repeated header keeps its last value; a value that is not UTF-8 is NULL. Tableflow's
+    struct has no `headers` field; tables written before it was added keep their shape.
   - **Unconfigured topics:** only the `warpstream` struct.
   - **Unparseable records:** a record that is not JSON, or not of the schema's shape, keeps NULL
     fields and its raw `warpstream.value`. That's like Tableflow's `dlq_mode: keep`; its default stops
     instead.
-  - **Headers:** record headers (CloudEvents `ce_*`) are not stored, as in Tableflow.
+- **Change events get a column per field.** A topic of change events (the Debezium envelope as Kafka
+  Connect's JSON converter writes it, schema embedded: `{"schema": ..., "payload": {"before", "after",
+  "op", "ts_ms", "source"}}`) that the Tableflow file does not configure is unwrapped. Mendix's entity
+  CDC publishes exactly this, one topic per entity (`cdc.<app>.<entity>.<major revision>.<space>`), so
+  each entity gets a table such as `local__cdc.TestApp.Order.1.local`:
+  - **Columns:** the entity's fields from the record's own schema: `id` (the Mendix object id), the
+    attributes, and each association as a list of object ids. `int*` → TINYINT..BIGINT, `float*` →
+    FLOAT/DOUBLE, `boolean`, `string` → VARCHAR, Decimal → DECIMAL(p, s), Timestamp → TIMESTAMP, Date
+    → DATE, arrays → LIST, structs → STRUCT. A delete's row holds the values from `before`.
+  - **`cdc`:** STRUCT(op, ts, source_ts, tx_id, sequence, snapshot, connector, version); `op` is `c`, `u`,
+    `d`, or `r` for a snapshot read.
+  - **New attributes:** a later minor revision of a CDC service that adds an attribute adds a column.
+  - **`<table>_current`:** a view with the latest row per record key (the object id), deleted objects
+    left out: the entity's current state.
+  - `[kafka] cdc = false` (or `--no-kafka-cdc`) keeps change events as raw values only.
 - **Durable, then committed.**
   - **Acknowledgement:** a produce is acknowledged once its records are in a buffer file
     (`<data>/.duckgraphlake/kafka.duckdb`).
@@ -102,10 +122,12 @@ duckgraphlake ./data --tableflow tableflow.yaml
     `iceberg_scan('<folder>')` reads the newest snapshot.
 
 Settings (`[kafka]` in the config file): `port` (9092; `--kafka-port 0` turns it off),
-`advertised_host`, `cluster` (`local`), `partitions` (1), `flush_ms` (1000), `tableflow`.
+`advertised_host`, `cluster` (`local`), `partitions` (1), `flush_ms` (1000), `tableflow`, `cdc` (true).
 
 Not verified against WarpStream itself: the `warpstream` struct's field types (from WarpStream's
-documentation), and what Tableflow does with JSON properties outside the schema (here: ignored).
+documentation), what Tableflow does with JSON properties outside the schema (here: ignored), and how
+Mendix's own Iceberg bridge lays out CDC tables (the unwrapped shape above is this server's own). The
+CDC message format was checked against a Mendix 11.16.1 runtime.
 
 ## Web UI
 
@@ -218,7 +240,7 @@ Tests (both need a DuckGraphLake checkout, for its fixture):
   through Apache Olingo's OData v4 client: the metadata model, queries, keys, navigation and
   `$expand`. Needs Java and Maven.
 - `server/test/kafka_test.sh` produces with the Kafka Java client (and librdkafka, when Python's
-  `confluent-kafka` is installed) and checks the tables, a restart and a crash. It needs Java and
+  `confluent-kafka` is installed) and checks the tables, change events and headers, a restart and a crash. It needs Java and
   Maven, but no DuckGraphLake checkout.
 - `DUCKGRAPHLAKE=<checkout> server/test/pg_test.sh` runs `server/test/pgjdbc/PgJdbcTest.java`
   through the PostgreSQL JDBC driver: metadata, parameterized queries (repeated, so the driver

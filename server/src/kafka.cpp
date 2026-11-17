@@ -373,14 +373,16 @@ std::vector<KafkaRecord> ParseRecords(const std::string &data) {
 			if (value_len >= 0) {
 				r.value = record.Raw(static_cast<size_t>(value_len));
 			}
-			// Headers (e.g. CloudEvents ce_*) are read past: Tableflow's tables do not keep them.
+			// Headers (e.g. CloudEvents ce_type, ce_source): kept in warpstream.headers.
 			auto headers = record.Varint();
 			for (int64_t h = 0; h < headers; h++) {
-				record.Raw(static_cast<size_t>(record.Varint()));
+				auto name = record.Raw(static_cast<size_t>(record.Varint()));
 				auto hv = record.Varint();
-				if (hv > 0) {
-					record.Raw(static_cast<size_t>(hv));
+				std::optional<std::string> header_value;
+				if (hv >= 0) {
+					header_value = record.Raw(static_cast<size_t>(hv));
 				}
+				r.headers.emplace_back(std::move(name), std::move(header_value));
 			}
 			out.push_back(std::move(r));
 		}

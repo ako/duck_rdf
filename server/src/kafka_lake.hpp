@@ -56,6 +56,7 @@ struct KafkaRecord {
 	int64_t timestamp_ms = 0;
 	std::optional<std::string> key;
 	std::optional<std::string> value;
+	std::vector<std::pair<std::string, std::optional<std::string>>> headers;
 };
 
 struct KafkaLakeOptions {
@@ -65,6 +66,7 @@ struct KafkaLakeOptions {
 	std::string cluster = "local";
 	int default_partitions = 1;
 	int flush_ms = 1000;
+	bool unwrap_cdc = true; // change events (Debezium envelope with schema) get a column per field
 	TableflowConfig tableflow;
 };
 
@@ -73,6 +75,9 @@ public:
 	// Called after a table's first commit, with its name and folder: the main database then
 	// creates a view over it.
 	using TableCallback = std::function<void(const std::string &table, const std::string &folder)>;
+
+	// A table's columns (name, DuckDB type), as the catalog has them.
+	using Columns = std::vector<std::pair<std::string, std::string>>;
 
 	KafkaLake(KafkaLakeOptions options, IcebergCatalog &catalog, TableCallback on_table);
 	~KafkaLake();
@@ -99,6 +104,7 @@ private:
 	void FlushLoop();
 	void Flush();
 	bool FlushTopic(duckdb::Connection &con, const std::string &topic, int64_t up_to_seq);
+	Columns TableColumns(duckdb::Connection &con, const std::string &qualified);
 
 	KafkaLakeOptions options_;
 	IcebergCatalog &catalog_;
@@ -119,6 +125,7 @@ private:
 	bool attached_ = false;
 	std::map<std::string, bool> table_ready_; // table -> exists in the catalog
 	std::map<std::string, bool> table_announced_;
+	std::map<std::string, Columns> table_columns_; // by table, read from the catalog
 };
 
 } // namespace dgl

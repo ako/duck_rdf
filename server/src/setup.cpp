@@ -185,6 +185,23 @@ std::string IcebergView(const std::string &folder) {
 	       (version.empty() ? "" : ", version = " + SqlLiteral(version)) + ", allow_moved_paths = true)";
 }
 
+std::string ChangeEventCurrentView(duckdb::Connection &con, const std::string &view) {
+	auto found = Column(con, "SELECT count(*) FROM (DESCRIBE " + SqlIdent(view) +
+	                             ") WHERE (column_name = 'cdc' AND column_type LIKE 'STRUCT(op VARCHAR%') OR "
+	                             "column_name = 'warpstream'");
+	if (found.empty() || found[0] != "2") {
+		return "";
+	}
+	auto current = view + "_current";
+	// One partition holds every record of a key, so the highest offset is the latest change. A
+	// tombstone (no value) or a delete ends the key.
+	Exec(con, "CREATE OR REPLACE VIEW " + SqlIdent(current) + " AS SELECT * EXCLUDE (cdc, warpstream) FROM " +
+	              SqlIdent(view) +
+	              " QUALIFY row_number() OVER (PARTITION BY warpstream.\"key\" ORDER BY "
+	              "warpstream.\"offset\" DESC) = 1 AND coalesce(cdc.op, 'd') <> 'd'");
+	return current;
+}
+
 std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config) {
 	std::vector<Exposed> exposed;
 	bool iceberg_loaded = false;
@@ -250,6 +267,10 @@ std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config) {
 								Exec(con,
 								     "CREATE OR REPLACE VIEW " + SqlIdent(name) + " AS " + IcebergView(table_full));
 								exposed.push_back({"iceberg", name, table_full});
+								auto current = ChangeEventCurrentView(con, name);
+								if (!current.empty()) {
+									exposed.push_back({"view", current, "latest state per key of " + name});
+								}
 							} catch (std::exception &ex) {
 								// A table created but never written has no snapshot to read yet.
 								Log("  skipped " + name + ": " + ex.what());
