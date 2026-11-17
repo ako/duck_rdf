@@ -32,10 +32,12 @@ std::string IcebergView(const std::string &folder);
 std::string ChangeEventCurrentView(duckdb::Connection &con, const std::string &view);
 
 std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config);
-void ConfigureSparql(duckdb::Connection &con, const Config &config);
+// Settings for the SPARQL translator, and the sparql()/sparql_sql() macros over the mapping glob.
+void ConfigureSparql(duckdb::Connection &con, const Config &config, const std::string &mapping_glob);
 // Unique, non-null template columns of the exposed tables, as sparql_unique_keys entries.
 std::vector<std::string> DetectKeys(duckdb::Connection &con, const std::vector<Exposed> &exposed,
                                     const std::string &mapping_glob);
-void LockDown(duckdb::Connection &con, const Config &config);
+// extra_dirs: more folders SQL may read (the run's mapping folder).
+void LockDown(duckdb::Connection &con, const Config &config, const std::vector<std::string> &extra_dirs = {});
 
 } // namespace dgl

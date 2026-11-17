@@ -375,6 +375,19 @@ int64_t KafkaLake::Append(const std::string &topic, int32_t partition, const std
 			headers = duckdb::Value::MAP(duckdb::LogicalType::VARCHAR, duckdb::LogicalType::BLOB, std::move(keys),
 			                             std::move(values));
 		}
+		for (auto &h : r.headers) {
+			if (h.first == "ce_type" && h.second) {
+				std::string source;
+				for (auto &h2 : r.headers) {
+					if (h2.first == "ce_source" && h2.second) {
+						source = *h2.second;
+					}
+				}
+				if (event_kinds_.insert(topic + "\x1f" + source + "\x1f" + *h.second).second) {
+					changed_topics_.insert(topic);
+				}
+			}
+		}
 		std::optional<ChangeEvent> change;
 		if (unwrap && r.value) {
 			change = UnwrapChangeEvent(*r.value);
@@ -408,6 +421,19 @@ int64_t KafkaLake::Append(const std::string &topic, int32_t partition, const std
 	next_offset_[std::make_pair(topic, partition)] = offset;
 	flush_cv_.notify_all();
 	return base;
+}
+
+std::map<std::string, int64_t> KafkaLake::Buffered() {
+	std::map<std::string, int64_t> out;
+	if (!open_) {
+		return out;
+	}
+	duckdb::Connection con(*db_);
+	for (auto &row : Column(con, "SELECT topic || '\x1f' || count(*) FROM kafka_buffer GROUP BY topic")) {
+		auto sep = row.find('\x1f');
+		out[row.substr(0, sep)] = std::stoll(row.substr(sep + 1));
+	}
+	return out;
 }
 
 void KafkaLake::FlushLoop() {
@@ -530,6 +556,7 @@ bool KafkaLake::FlushTopic(duckdb::Connection &con, const std::string &topic, in
 		bool has_headers = warpstream_type && warpstream_type->find("headers") != std::string::npos;
 		bool cdc = !configured && options_.unwrap_cdc && ColumnType(columns, "cdc") != nullptr;
 		std::string fields;
+		bool altered_any = false;
 		if (cdc) {
 			// Fields the entity gained since the table was made (a minor revision of a CDC service
 			// adds attributes) become new columns.
@@ -550,6 +577,7 @@ bool KafkaLake::FlushTopic(duckdb::Connection &con, const std::string &topic, in
 			}
 			if (altered) {
 				columns = table_columns_[table] = TableColumns(con, qualified);
+				altered_any = true;
 			}
 			std::string structure = "{";
 			for (auto &c : columns) {
@@ -582,9 +610,16 @@ bool KafkaLake::FlushTopic(duckdb::Connection &con, const std::string &topic, in
 		              " AND seq <= " + std::to_string(up_to_seq) + " ORDER BY \"partition\", \"offset\"");
 		Exec(con, "DELETE FROM kafka_buffer WHERE topic = " + SqlLiteral(topic) +
 		              " AND seq <= " + std::to_string(up_to_seq));
+		bool new_kinds;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			new_kinds = changed_topics_.erase(topic) > 0;
+		}
 		if (!table_announced_[table]) {
 			table_announced_[table] = true;
 			on_table_(table, catalog_.TableFolder(NAMESPACE, table));
+		} else if ((altered_any || new_kinds) && on_change_) {
+			on_change_(table, catalog_.TableFolder(NAMESPACE, table));
 		}
 		return true;
 	} catch (std::exception &ex) {

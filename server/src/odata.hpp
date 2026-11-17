@@ -16,6 +16,9 @@
 // length, trim, concat, year, month, day. Read-only: other methods get 405.
 #pragma once
 
+#include <mutex>
+#include <shared_mutex>
+
 #include "duckdb.hpp"
 #include "json.hpp"
 #include "sparql.hpp"
@@ -68,7 +71,10 @@ public:
 	void Load(const std::string &mapping, const std::vector<std::string> &ontology_files);
 	ODataResponse Handle(const ODataRequest &request) const;
 
-	const std::vector<ODataEntitySet> &Sets() const {
+	// Empties the model (no mapping).
+	void Clear();
+	std::vector<ODataEntitySet> Sets() const {
+		std::shared_lock<std::shared_mutex> lock(mutex_);
 		return sets_;
 	}
 
@@ -86,6 +92,7 @@ private:
 	duckdb::DuckDB &db_;
 	const SparqlExecutor &executor_;
 	int64_t max_page_;
+	mutable std::shared_mutex mutex_; // Load replaces sets_ while requests read it
 	std::vector<ODataEntitySet> sets_;
 };
 

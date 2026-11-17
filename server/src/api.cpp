@@ -128,9 +128,11 @@ void Api::Build(const std::vector<Exposed> &exposed, const ODataService *odata,
 	for (auto &e : exposed) {
 		by_name[e.name] = &e;
 	}
+	// Objects outside the main schema (the per-app schemas) are named schema.name.
 	std::map<std::string, Json> columns;
-	for (auto &row : Rows(con, "SELECT table_name, column_name, data_type FROM duckdb_columns() WHERE database_name = "
-	                           "current_database() AND NOT internal ORDER BY table_name, column_index")) {
+	for (auto &row : Rows(con, "SELECT CASE WHEN schema_name = 'main' THEN table_name ELSE schema_name || '.' || "
+	                           "table_name END, column_name, data_type FROM duckdb_columns() WHERE database_name = "
+	                           "current_database() AND NOT internal ORDER BY 1, column_index")) {
 		if (!columns.count(row[0])) {
 			columns[row[0]] = Json::Array();
 		}
@@ -140,14 +142,21 @@ void Api::Build(const std::vector<Exposed> &exposed, const ODataService *odata,
 		columns[row[0]].Push(col);
 	}
 	Json sources = Json::Array();
-	std::vector<std::string> own_objects;
-	for (auto &row : Rows(con, "SELECT table_name, 'table' FROM duckdb_tables() WHERE database_name = "
-	                           "current_database() AND NOT internal UNION ALL SELECT view_name, 'view' FROM "
-	                           "duckdb_views() WHERE database_name = current_database() AND NOT internal AND NOT "
-	                           "temporary ORDER BY 1")) {
-		own_objects.push_back(row[0]);
+	std::map<std::string, std::string> own_objects;
+	for (auto &row :
+	     Rows(con, "SELECT CASE WHEN schema_name = 'main' THEN table_name ELSE schema_name || '.' || table_name END, "
+	               "'table', schema_name, table_name, comment FROM duckdb_tables() WHERE database_name = "
+	               "current_database() AND NOT internal UNION ALL SELECT CASE WHEN schema_name = 'main' THEN "
+	               "view_name ELSE schema_name || '.' || view_name END, 'view', schema_name, view_name, comment FROM "
+	               "duckdb_views() WHERE database_name = current_database() AND NOT internal AND NOT temporary ORDER "
+	               "BY 1")) {
+		own_objects[row[0]] = SqlIdent(row[2]) + "." + SqlIdent(row[3]);
 		Json source = Json::Object();
 		source.Set("name", row[0]);
+		source.Set("schema", row[2]);
+		if (!row[4].empty()) {
+			source.Set("comment", row[4]);
+		}
 		auto it = by_name.find(row[0]);
 		source.Set("kind", it != by_name.end() ? it->second->kind : row[1]);
 		source.Set("source", it != by_name.end() ? Json(it->second->source) : Json());
@@ -294,17 +303,19 @@ Json Api::QueryToJson(duckdb::Connection &con, const std::string &sql, int64_t m
 }
 
 Json Api::TablePreview(const std::string &name, int64_t limit) const {
-	bool known;
-	{
-		std::lock_guard<std::mutex> lock(mutex_);
-		known = std::find(own_objects_.begin(), own_objects_.end(), name) != own_objects_.end();
-	}
-	if (!known) {
+	auto ref = SqlRef(name);
+	if (ref.empty()) {
 		throw std::runtime_error("no table or view named " + name);
 	}
 	duckdb::Connection con(db_);
 	limit = std::max<int64_t>(1, std::min<int64_t>(limit, 1000));
-	return QueryToJson(con, "SELECT * FROM " + SqlIdent(name) + " LIMIT " + std::to_string(limit), limit);
+	return QueryToJson(con, "SELECT * FROM " + ref + " LIMIT " + std::to_string(limit), limit);
+}
+
+std::string Api::SqlRef(const std::string &name) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto it = own_objects_.find(name);
+	return it == own_objects_.end() ? std::string() : it->second;
 }
 
 Json Api::RunSql(const std::string &sql, int64_t max_rows) const {

@@ -1,6 +1,9 @@
 #include "mcp.hpp"
 
+#include "guide.hpp"
 #include "setup.hpp"
+
+#include "duckdb/parser/parser.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -23,8 +26,17 @@ struct UnknownTool : std::runtime_error {
 	using std::runtime_error::runtime_error;
 };
 
+const char *SERVER_INSTRUCTIONS =
+    "duckgraphlake: a development data lake. Apps stream events and entity changes (CDC) into it over\n"
+    "Kafka; it serves the data as SQL (DuckDB dialect), as a knowledge graph (SPARQL), as OData and here.\n"
+    "Start with guide (topic agents for the workflow, mendix to connect an app), then list_topics and\n"
+    "list_tables; describe_table before writing SQL; sql for read-only queries. CDC topics become a\n"
+    "schema per app: <app>.<entity> (current state), <app>.<entity>_history, <app>.<entity>__<assoc>\n"
+    "(links); business events <app>.<event type>. Quote names with dots or keywords: testapp.\"order\".\n"
+    "define_view and set_mapping change what other apps read (views, graph, OData); they persist.\n";
+
 const char *INSTRUCTIONS =
-    "A knowledge graph over relational data and data-lake files, queried with SPARQL.\n"
+    "The graph: a knowledge graph over the tables, queried with SPARQL.\n"
     "Start with list_classes, then describe_class for the classes you need; it lists the properties\n"
     "their instances have. Use find_entity to turn a name into an IRI. Write SPARQL with full IRIs in\n"
     "angle brackets, or PREFIX declarations. A class or property that does not exist is an error, not\n"
@@ -199,8 +211,8 @@ int64_t IntArg(const Json &args, const std::string &name, int64_t fallback) {
 } // namespace
 
 McpServer::McpServer(duckdb::DuckDB &db, const SparqlExecutor &executor, const Config &config,
-                     std::vector<std::string> ontology_files)
-    : db_(db), executor_(executor), config_(config), ontology_files_(std::move(ontology_files)) {
+                     std::vector<std::string> ontology_files, McpContext &context)
+    : db_(db), executor_(executor), config_(config), ontology_files_(std::move(ontology_files)), context_(context) {
 	static const std::set<std::string> types {"string", "iri", "integer", "decimal", "boolean"};
 	static const std::regex name_pattern("[A-Za-z_][A-Za-z0-9_]*");
 	for (auto &tmpl : config_.templates) {
@@ -627,6 +639,60 @@ Json McpServer::Template(const QueryTemplate &tmpl, const Json &args) {
 
 Json McpServer::ToolList() const {
 	Json tools = Json::Array();
+	tools.Push(
+	    Tool("guide",
+	         "The server's help: how to connect apps (Mendix Business Events and CDC, any Kafka producer), "
+	         "what topics become, SQL, the graph and mappings, OData, these tools. Without a topic: the list "
+	         "of topics. Read 'agents' first.",
+	         Schema({{"topic", "string", "e.g. agents, mendix, kafka, cdc, events, sql, graph, mcp, config"}}, {})));
+	tools.Push(Tool("list_tables",
+	                "Every table and view, with what it was made from: a Kafka topic (kind cdc, events or raw, its "
+	                "app and entity), a data file, or a view an agent defined. Optionally only one schema (an app's "
+	                "schema, e.g. testapp).",
+	                Schema({{"schema", "string", ""}}, {})));
+	tools.Push(Tool("describe_table",
+	                "One table or view (name, or schema.name): its columns and types, row count, sample rows, what it "
+	                "was made from, and its OData entity set / graph class when it has one.",
+	                Schema({{"name", "string", ""}, {"sample", "integer", "sample rows (default 5)"}}, {"name"})));
+	tools.Push(Tool("sql",
+	                "Run one read-only SQL query (SELECT, DESCRIBE, SHOW, EXPLAIN) in DuckDB's dialect. At most "
+	                "`limit` rows; `truncated` says whether there were more. Quote names with dots or keywords.",
+	                Schema({{"query", "string", ""}, {"limit", "integer", ""}}, {"query"})));
+	tools.Push(Tool("list_topics",
+	                "The Kafka topics: records committed and not yet committed, last offset and time, what each "
+	                "became (kind, app, entity, readable views), and records on a CDC topic that were not change "
+	                "events. Use it to check that an app's events arrive.",
+	                Schema({}, {})));
+	if (config_.mcp_allow_changes) {
+		tools.Push(Tool("define_view",
+		                "Create or replace a SQL view (name or schema.name) from one SELECT, for other apps and agents "
+		                "to read over SQL, or for a mapping to put on the graph. Kept in the data folder and created "
+		                "again at start-up. Returns the view's columns.",
+		                Schema({{"name", "string", ""},
+		                        {"sql", "string", "a SELECT"},
+		                        {"description", "string", "what the view is for"}},
+		                       {"name", "sql"})));
+		tools.Push(Tool("drop_view", "Drop a view made with define_view.", Schema({{"name", "string", ""}}, {"name"})));
+		tools.Push(Tool("get_mapping",
+		                "The files of the effective mapping (configured, set by agents, generated from CDC topics), "
+		                "or with a name, one file's text. Read a generated one before writing a mapping of your own.",
+		                Schema({{"name", "string", ""}}, {})));
+		tools.Push(Tool("set_mapping",
+		                "Add or replace a mapping (R2RML Turtle or YARRRML) under a name: it puts tables on the graph "
+		                "(SPARQL, the graph tools) and in OData. It is checked first; a mapping that does not load is "
+		                "refused with the reason. Kept in the data folder. Returns the OData entity sets.",
+		                Schema({{"name", "string", ""},
+		                        {"mapping", "string", "the mapping's text"},
+		                        {"format", "string", "turtle (default) or yarrrml"}},
+		                       {"name", "mapping"})));
+		tools.Push(Tool("remove_mapping", "Remove a mapping set with set_mapping.",
+		                Schema({{"name", "string", ""}}, {"name"})));
+	}
+	if (!HasGraph()) {
+		Json out = Json::Object();
+		out.Set("tools", tools);
+		return out;
+	}
 	tools.Push(Tool("list_classes",
 	                "The classes in the data (asserted and inferred from the ontology), with instance counts, labels, "
 	                "comments and superclasses. Start here.",
@@ -671,6 +737,53 @@ Json McpServer::ToolList() const {
 }
 
 Json McpServer::CallTool(const std::string &name, const Json &args) {
+	if (name == "guide") {
+		return Guide(StringArg(args, "topic", false));
+	}
+	if (name == "list_tables") {
+		return ListTables(StringArg(args, "schema", false));
+	}
+	if (name == "describe_table") {
+		return DescribeTable(StringArg(args, "name"), IntArg(args, "sample", 5));
+	}
+	if (name == "sql") {
+		return Sql(StringArg(args, "query"), IntArg(args, "limit", 100));
+	}
+	if (name == "list_topics") {
+		return ListTopics();
+	}
+	static const std::set<std::string> changes {"define_view", "drop_view", "get_mapping", "set_mapping",
+	                                            "remove_mapping"};
+	if (changes.count(name)) {
+		if (!config_.mcp_allow_changes) {
+			throw ToolError(name + " is turned off ([mcp] allow_changes = false)");
+		}
+		if (name == "define_view") {
+			return DefineView(StringArg(args, "name"), StringArg(args, "sql"), StringArg(args, "description", false));
+		}
+		if (name == "drop_view") {
+			return DropView(StringArg(args, "name"));
+		}
+		if (name == "get_mapping") {
+			return GetMapping(StringArg(args, "name", false));
+		}
+		if (name == "set_mapping") {
+			return SetMapping(StringArg(args, "name"), StringArg(args, "mapping"), StringArg(args, "format", false));
+		}
+		return RemoveMapping(StringArg(args, "name"));
+	}
+	static const std::set<std::string> graph_tools {"list_classes", "describe_class", "find_entity", "describe_entity",
+	                                                "sparql"};
+	if ((graph_tools.count(name) || !config_.templates.empty()) && !HasGraph()) {
+		bool is_template = false;
+		for (auto &tmpl : config_.templates) {
+			is_template = is_template || tmpl.name == name;
+		}
+		if (graph_tools.count(name) || is_template) {
+			throw ToolError("there is no graph yet: no mapping. One is generated when a CDC topic arrives, or set "
+			                "one with set_mapping (guide topic graph).");
+		}
+	}
 	if (name == "list_classes") {
 		return ListClasses();
 	}
@@ -725,17 +838,15 @@ std::optional<Json> McpServer::Handle(const Json &message) {
 		Json tools = Json::Object();
 		tools.Set("listChanged", false);
 		caps.Set("tools", tools);
-		if (!ontology_files_.empty()) {
-			Json resources = Json::Object();
-			resources.Set("listChanged", false);
-			caps.Set("resources", resources);
-		}
+		Json resources = Json::Object();
+		resources.Set("listChanged", false);
+		caps.Set("resources", resources);
 		result.Set("capabilities", caps);
 		Json info = Json::Object();
 		info.Set("name", "duckgraphlake");
 		info.Set("version", "0.1.0");
 		result.Set("serverInfo", info);
-		result.Set("instructions", INSTRUCTIONS);
+		result.Set("instructions", Instructions());
 		reply.Set("result", result);
 		return reply;
 	}
@@ -779,6 +890,14 @@ std::optional<Json> McpServer::Handle(const Json &message) {
 	}
 	if (method == "resources/list") {
 		Json list = Json::Array();
+		for (auto &t : GuideTopics(context_.guide_values)) {
+			Json r = Json::Object();
+			r.Set("uri", "guide://" + t.name);
+			r.Set("name", "guide: " + t.name);
+			r.Set("mimeType", "text/markdown");
+			r.Set("description", t.summary);
+			list.Push(r);
+		}
 		if (!ontology_files_.empty()) {
 			Json r = Json::Object();
 			r.Set("uri", "ontology://turtle");
@@ -794,6 +913,21 @@ std::optional<Json> McpServer::Handle(const Json &message) {
 	}
 	if (method == "resources/read") {
 		auto uri = params.Get("uri");
+		if (uri && uri->IsString() && uri->AsString().rfind("guide://", 0) == 0) {
+			try {
+				auto topic = Guide(uri->AsString().substr(8));
+				Json c = Json::Object();
+				c.Set("uri", uri->AsString());
+				c.Set("mimeType", "text/markdown");
+				c.Set("text", topic.Get("text") ? *topic.Get("text") : Json(""));
+				Json result = Json::Object();
+				result.Set("contents", Json::ArrayOf(std::vector<Json> {c}));
+				reply.Set("result", result);
+				return reply;
+			} catch (std::exception &ex) {
+				return error(-32602, ex.what());
+			}
+		}
 		if (!uri || !uri->IsString() || uri->AsString() != "ontology://turtle" || ontology_files_.empty()) {
 			return error(-32602, "unknown resource");
 		}
@@ -823,6 +957,317 @@ std::optional<Json> McpServer::Handle(const Json &message) {
 		return reply;
 	}
 	return error(-32601, "method not found: " + method);
+}
+
+// ---------------------------------------------------------------------------
+// The server beyond the graph: help, tables, SQL, topics, and changes to views and mappings.
+
+bool McpServer::HasGraph() const {
+	return context_.model && context_.model->HasMapping();
+}
+
+std::string McpServer::Instructions() const {
+	std::string text = SERVER_INSTRUCTIONS;
+	if (HasGraph()) {
+		text += std::string("\n") + INSTRUCTIONS;
+	} else {
+		text += "\nThere is no graph yet (no mapping): the graph tools appear once a CDC topic arrives or a mapping "
+		        "is set.";
+	}
+	return text;
+}
+
+void McpServer::Invalidate() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	counts_loaded_ = false;
+	counts_.clear();
+	class_cache_.clear();
+}
+
+Json McpServer::Guide(const std::string &topic) {
+	Json out = Json::Object();
+	if (Trim(topic).empty()) {
+		Json topics = Json::Array();
+		for (auto &t : GuideTopics(context_.guide_values)) {
+			Json item = Json::Object();
+			item.Set("topic", t.name);
+			item.Set("about", t.summary);
+			topics.Push(item);
+		}
+		out.Set("topics", topics);
+		out.Set("hint", "call guide with a topic; start with agents");
+		return out;
+	}
+	try {
+		auto t = dgl::Guide(LowerAscii(Trim(topic)), context_.guide_values);
+		out.Set("topic", t.name);
+		out.Set("text", t.text);
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+	return out;
+}
+
+std::string McpServer::TableRef(const std::string &name) const {
+	auto ref = context_.api ? context_.api->SqlRef(Trim(name)) : std::string();
+	if (ref.empty()) {
+		// Quoted forms: testapp."order", "local__orders".
+		auto plain = Trim(name);
+		plain.erase(std::remove(plain.begin(), plain.end(), '"'), plain.end());
+		ref = context_.api ? context_.api->SqlRef(plain) : std::string();
+	}
+	if (ref.empty()) {
+		throw ToolError("no table or view named " + name + "; list_tables lists them");
+	}
+	return ref;
+}
+
+Json McpServer::ListTables(const std::string &schema) {
+	auto catalog = context_.api ? context_.api->Catalog() : Json::Object();
+	Json out = Json::Array();
+	auto sources = catalog.Get("sources");
+	if (!sources) {
+		return out;
+	}
+	auto wanted = LowerAscii(Trim(schema));
+	for (auto &s : sources->Items()) {
+		auto name = s.Get("name")->AsString();
+		auto in_schema = s.Get("schema") ? s.Get("schema")->AsString() : std::string("main");
+		if (!wanted.empty() && in_schema != wanted) {
+			continue;
+		}
+		Json item = Json::Object();
+		item.Set("name", name);
+		item.Set("kind", *s.Get("kind"));
+		if (auto c = s.Get("comment")) {
+			item.Set("about", *c);
+		}
+		item.Set("columns", static_cast<int64_t>(s.Get("columns") ? s.Get("columns")->Size() : 0));
+		if (context_.model) {
+			if (auto info = context_.model->Find(name)) {
+				item.Set("topic", info->topic);
+				item.Set("topic_kind", info->kind);
+				if (!info->app.empty()) {
+					item.Set("app", info->app);
+				}
+				if (!info->entity.empty()) {
+					item.Set("entity", info->entity);
+				}
+				std::string about;
+				if (name == info->view) {
+					about = "current state of " + info->app + "." + info->entity + " (one row per object)";
+				} else if (name == info->history) {
+					about = "every change to " + info->app + "." + info->entity;
+				} else if (name == info->current) {
+					about = "current state (raw name; prefer " + info->view + ")";
+				} else if (name == info->table) {
+					about = "the topic's table as received";
+				} else {
+					about = info->kind == "events" ? "business events of one type" : "";
+				}
+				if (!about.empty()) {
+					item.Set("about", about);
+				}
+			} else if (in_schema != "main" && name.find("__") != std::string::npos) {
+				item.Set("about", "association links (id, target)");
+			}
+		}
+		out.Push(item);
+	}
+	Json result = Json::Object();
+	result.Set("tables", out);
+	result.Set("hint", "describe_table shows columns and sample rows; names with dots or keywords need quotes in SQL");
+	return result;
+}
+
+Json McpServer::DescribeTable(const std::string &name, int64_t sample) {
+	auto ref = TableRef(name);
+	sample = std::max<int64_t>(0, std::min<int64_t>(sample, 50));
+	Json out = Json::Object();
+	out.Set("name", Trim(name));
+	out.Set("sql", ref);
+	try {
+		auto described = context_.api->RunSql("SELECT column_name, column_type FROM (DESCRIBE " + ref + ")", 1000);
+		Json columns = Json::Array();
+		for (auto &row : described.Get("rows")->Items()) {
+			Json col = Json::Object();
+			col.Set("name", row.Items()[0]);
+			col.Set("type", row.Items()[1]);
+			columns.Push(col);
+		}
+		out.Set("columns", columns);
+		auto count = context_.api->RunSql("SELECT count(*) FROM " + ref, 1);
+		out.Set("rows", count.Get("rows")->Items()[0].Items()[0]);
+		if (sample > 0) {
+			auto rows = context_.api->RunSql("SELECT * FROM " + ref + " LIMIT " + std::to_string(sample), sample);
+			out.Set("sample", *rows.Get("rows"));
+		}
+	} catch (ToolError &) {
+		throw;
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+	if (context_.model) {
+		if (auto info = context_.model->Find(Trim(name))) {
+			Json origin = Json::Object();
+			origin.Set("topic", info->topic);
+			origin.Set("kind", info->kind);
+			if (!info->app.empty()) {
+				origin.Set("app", info->app);
+			}
+			if (!info->entity.empty()) {
+				origin.Set("entity", info->entity);
+				origin.Set("current", info->view.empty() ? info->current : info->view);
+				origin.Set("history", info->history);
+				// The generated mapping names the class <App>_<Entity>, and so the OData entity set.
+				if (context_.odata) {
+					for (auto &set : context_.odata->Sets()) {
+						if (set.name == info->app + "_" + info->entity) {
+							origin.Set("odata_entity_set", set.name);
+							origin.Set("graph_class", set.class_iri);
+						}
+					}
+				}
+			}
+			out.Set("origin", origin);
+		}
+	}
+	return out;
+}
+
+Json McpServer::Sql(const std::string &query, int64_t limit) {
+	auto parser = duckdb::Parser::GetBuiltinParser();
+	try {
+		parser.ParseQuery(query);
+	} catch (std::exception &ex) {
+		throw ToolError(duckdb::ErrorData(ex).RawMessage());
+	}
+	if (parser.statements.size() != 1) {
+		throw ToolError("send one statement");
+	}
+	auto type = parser.statements[0]->type;
+	if (type != duckdb::StatementType::SELECT_STATEMENT && type != duckdb::StatementType::EXPLAIN_STATEMENT) {
+		throw ToolError("the sql tool is read-only (SELECT, DESCRIBE, SHOW, EXPLAIN); views: define_view");
+	}
+	limit = std::max<int64_t>(1, std::min<int64_t>(limit, config_.mcp_max_rows));
+	try {
+		return context_.api->RunSql(query, limit);
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+}
+
+Json McpServer::ListTopics() {
+	Json out = Json::Object();
+	if (!context_.topics) {
+		out.Set("topics", Json::Array());
+		out.Set("note", "the Kafka endpoint is off ([kafka] port = 0)");
+		return out;
+	}
+	out.Set("topics", TopicReport(db_, *context_.model, context_.topics()));
+	return out;
+}
+
+Json McpServer::GraphSummary() const {
+	Json sets = Json::Array();
+	if (context_.odata) {
+		for (auto &set : context_.odata->Sets()) {
+			Json item = Json::Object();
+			item.Set("entity_set", set.name);
+			item.Set("class", set.class_iri);
+			item.Set("properties", static_cast<int64_t>(set.properties.size()));
+			Json navs = Json::Array();
+			for (auto &n : set.navigations) {
+				navs.Push(n.name + " -> " + n.target);
+			}
+			item.Set("navigation", navs);
+			sets.Push(item);
+		}
+	}
+	return sets;
+}
+
+Json McpServer::DefineView(const std::string &name, const std::string &sql, const std::string &description) {
+	try {
+		context_.model->DefineView(Trim(name), sql, description);
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+	if (context_.reload) {
+		context_.reload("define_view " + name);
+	}
+	auto out = DescribeTable(Trim(name), 3);
+	out.Set("kept", "in the data folder (.duckgraphlake/views/); created again at start-up");
+	return out;
+}
+
+Json McpServer::DropView(const std::string &name) {
+	try {
+		context_.model->DropView(Trim(name));
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+	if (context_.reload) {
+		context_.reload("drop_view " + name);
+	}
+	Json out = Json::Object();
+	out.Set("dropped", Trim(name));
+	return out;
+}
+
+Json McpServer::GetMapping(const std::string &name) {
+	Json out = Json::Object();
+	if (!Trim(name).empty()) {
+		try {
+			out.Set("name", Trim(name));
+			out.Set("text", context_.model->MappingOf(Trim(name)));
+		} catch (std::exception &ex) {
+			throw ToolError(ex.what());
+		}
+		return out;
+	}
+	Json files = Json::Array();
+	for (auto &f : context_.model->MappingFiles()) {
+		Json item = Json::Object();
+		item.Set("name", f.name);
+		item.Set("origin", f.origin);
+		item.Set("path", f.path);
+		files.Push(item);
+	}
+	out.Set("files", files);
+	out.Set("entity_sets", GraphSummary());
+	out.Set("hint", "get_mapping with a name shows a file; set_mapping adds one of your own");
+	return out;
+}
+
+Json McpServer::SetMapping(const std::string &name, const std::string &text, const std::string &format) {
+	try {
+		context_.model->SetMapping(Trim(name), text, LowerAscii(Trim(format)));
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+	if (context_.reload) {
+		context_.reload("set_mapping " + name);
+	}
+	Json out = Json::Object();
+	out.Set("mapping", "50-agent-" + PlainName(name));
+	out.Set("entity_sets", GraphSummary());
+	return out;
+}
+
+Json McpServer::RemoveMapping(const std::string &name) {
+	try {
+		context_.model->RemoveMapping(Trim(name));
+	} catch (std::exception &ex) {
+		throw ToolError(ex.what());
+	}
+	if (context_.reload) {
+		context_.reload("remove_mapping " + name);
+	}
+	Json out = Json::Object();
+	out.Set("removed", Trim(name));
+	out.Set("entity_sets", GraphSummary());
+	return out;
 }
 
 } // namespace dgl

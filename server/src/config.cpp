@@ -108,9 +108,8 @@ void LoadConfigFile(const std::string &path, Config &config) {
 		config.kafka_flush_ms = static_cast<int>(*p);
 	}
 	Read(table, "kafka", "tableflow", config.tableflow_config);
-	if (auto b = table["kafka"]["cdc"].value<bool>()) {
-		config.kafka_cdc = *b;
-	}
+	Read(table, "kafka", "cdc", config.kafka_cdc);
+	Read(table, "kafka", "cdc_mapping", config.kafka_cdc_mapping);
 	config.tableflow_config = ResolvePath(config, config.tableflow_config);
 	Read(table, "odata", "enabled", config.odata_enabled);
 	ReadTri(table, "odata", "anonymous", config.odata_anonymous);
@@ -118,6 +117,7 @@ void LoadConfigFile(const std::string &path, Config &config) {
 	Read(table, "mcp", "enabled", config.mcp_enabled);
 	ReadTri(table, "mcp", "anonymous", config.mcp_anonymous);
 	Read(table, "mcp", "max_rows", config.mcp_max_rows);
+	Read(table, "mcp", "allow_changes", config.mcp_allow_changes);
 	if (auto templates = table["mcp"]["templates"].as_array()) {
 		for (auto &node : *templates) {
 			auto t = node.as_table();

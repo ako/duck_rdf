@@ -18,6 +18,14 @@ is DuckDB's own extension, installed from DuckDB's repository the first time a f
 Iceberg table. It is the same server as the Docker image in DuckGraphLake (`server/`), without
 TLS: it is meant for a developer's machine.
 
+## For agents and newcomers: `duckgraphlake help`
+
+The binary explains itself: `duckgraphlake help` lists the topics (quickstart, config, data,
+mendix, kafka, cdc, events, sql, graph, mcp, agents, http), and `duckgraphlake help <topic>` prints
+one, with this machine's addresses filled in (`help config` is a complete annotated server.toml).
+The same text is served at `GET /api/guide/<topic>`, and over MCP as the `guide` tool and
+`guide://<topic>` resources. The topics are the Markdown files in `server/guide/`, compiled in.
+
 ## Run
 
 ```bash
@@ -217,9 +225,45 @@ of the graph, not per table. The model comes from the mapping and the ontology (
 
 If a property has several values for one entity, the entity shows one of them.
 
-MCP: add `http://127.0.0.1:9495/mcp` as a streamable HTTP server in the agent's configuration.
-Tools: `list_classes`, `describe_class`, `find_entity`, `describe_entity`, `sparql`, plus one per
-`[[mcp.templates]]` entry in the config file.
+MCP: add `http://127.0.0.1:9495/mcp` as a streamable HTTP server in the agent's configuration
+(`claude mcp add --transport http duckgraphlake http://127.0.0.1:9495/mcp`). Tools:
+
+- **Always:** `guide`, `list_tables`, `describe_table`, `sql` (read-only) and `list_topics`.
+- **Changes**, kept in the data folder (`[mcp] allow_changes`, default true):
+  - `define_view` and `drop_view`: views kept in `.duckgraphlake/views/` and created again at start-up;
+  - `get_mapping`, `set_mapping` and `remove_mapping`: mappings in `.duckgraphlake/mappings/`,
+    checked before they are taken.
+- **The graph, once there is a mapping:** `list_classes`, `describe_class`, `find_entity`,
+  `describe_entity` and `sparql`, plus one tool per `[[mcp.templates]]` entry in the config file.
+
+## The model, kept up to date while it runs
+
+- **Per-app schemas.** Each Mendix app gets a schema of readable views over its topic tables:
+  - `<app>.<entity>`: the current state of a CDC entity;
+  - `<app>.<entity>_history`: every change;
+  - `<app>.<entity>__<assoc>`: one row per association link;
+  - `<app>.<event type>`: business events, with the payload's fields as columns. Any topic with
+    CloudEvents `ce_type`/`ce_source` headers gets these.
+- **A generated mapping per app.** Each app's CDC entities are mapped to the graph:
+  - class `<App>_<Entity>`, which is also the OData entity set;
+  - typed attributes;
+  - associations as links, which become OData navigation properties. The target entity is found
+    from the Mendix object ids, which carry the entity type above bit 48, or else from the
+    association's name.
+
+  So OData, SPARQL and the MCP graph tools cover every app without a hand-written mapping
+  (`[kafka] cdc_mapping = false` turns this off).
+- **The effective mapping.** It is a folder for this run in the temp directory, holding:
+  - links to the configured files (`-m`) and to agents' mappings;
+  - the generated mappings.
+- **Reloads without a restart.** Everything is rebuilt when one of these happens:
+  - a topic table appears or changes shape, or a new event type arrives;
+  - a configured mapping file or the `-i` script changes (watched every 2 s);
+  - an agent defines a view or sets a mapping.
+
+  A rebuild updates the OData model, MCP and the catalog.
+- **The data folder stays read-only until data arrives.** Nothing is written to it until a topic
+  arrives or an agent defines something.
 
 ## Build
 
@@ -247,7 +291,11 @@ Tests (both need a DuckGraphLake checkout, for its fixture):
   through Apache Olingo's OData v4 client: the metadata model, queries, keys, navigation and
   `$expand`. Needs Java and Maven.
 - `server/test/kafka_test.sh` produces with the Kafka Java client (and librdkafka, when Python's
-  `confluent-kafka` is installed) and checks the tables, change events and headers, a restart and a crash. It needs Java and
+  `confluent-kafka` is installed). It checks:
+  - the tables, change events and headers;
+  - the per-app views and the generated OData entity sets;
+  - the MCP discovery tools and the help topics;
+  - a restart and a crash. It needs Java and
   Maven, but no DuckGraphLake checkout.
 - `DUCKGRAPHLAKE=<checkout> server/test/pg_test.sh` runs `server/test/pgjdbc/PgJdbcTest.java`
   through the PostgreSQL JDBC driver: metadata, parameterized queries (repeated, so the driver

@@ -76,13 +76,15 @@ struct Config {
 	std::string kafka_cluster = "local";
 	int kafka_partitions = 1;
 	int kafka_flush_ms = 1000;
-	std::string tableflow_config; // a Tableflow YAML file
-	bool kafka_cdc = true;        // change events get a column per field, and a <table>_current view
+	std::string tableflow_config;  // a Tableflow YAML file
+	bool kafka_cdc = true;         // change events get a column per field, and a <table>_current view
+	bool kafka_cdc_mapping = true; // and each app's CDC entities a generated mapping (graph, OData, MCP)
 
 	// [mcp]
 	bool mcp_enabled = true;
 	int mcp_anonymous = -1;
 	int64_t mcp_max_rows = 1000;
+	bool mcp_allow_changes = true; // define_view, drop_view, set_mapping, remove_mapping
 	std::vector<QueryTemplate> templates;
 
 	bool Loopback() const;

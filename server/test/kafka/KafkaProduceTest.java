@@ -61,7 +61,11 @@ public class KafkaProduceTest {
     }
     try (KafkaProducer<String, String> p = producer(bootstrap, "zstd")) {
       RecordMetadata m = null;
-      for (int i = 0; i < 10; i++) m = p.send(event("mendix.events", null, "{\"entity\":\"Sales.Order\",\"change\":\"update\",\"n\":" + i + "}", "EntityChanged")).get();
+      for (int i = 0; i < 10; i++) {
+        ProducerRecord<String, String> r = event("mendix.events", null, "{\"entity\":\"Sales.Order\",\"change\":\"update\",\"n\":" + i + "}", "EntityChanged");
+        r.headers().add(new RecordHeader("ce_source", "/TestApp/EventsService/".getBytes(StandardCharsets.UTF_8)));
+        m = p.send(r).get();
+      }
       System.out.println("mendix.events: last offset " + m.offset());
     }
     if (n == 1000) {

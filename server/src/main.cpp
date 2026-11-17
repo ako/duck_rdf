@@ -9,10 +9,12 @@
 // The same configuration file as the Docker image (server.example.toml) works here; flags override it.
 #include "api.hpp"
 #include "config.hpp"
+#include "guide.hpp"
 #include "iceberg_catalog.hpp"
 #include "kafka.hpp"
 #include "kafka_lake.hpp"
 #include "json.hpp"
+#include "lakemodel.hpp"
 #include "log.hpp"
 #include "mcp.hpp"
 #include "odata.hpp"
@@ -25,6 +27,8 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "httplib.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -32,6 +36,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace dgl; // NOLINT
@@ -52,14 +57,19 @@ void Usage() {
 	std::cout << R"(duckgraphlake )" << VERSION << R"( - a folder of data files as SQL, SPARQL and MCP endpoints
 
 Usage: duckgraphlake [options] [DATA_DIR]
+       duckgraphlake help [TOPIC] [options]   how to install, configure, connect apps and agents
+
+Start with `duckgraphlake help` (agents: `duckgraphlake help agents`).
 
   DATA_DIR               folder to serve (default: the current one). Each Parquet, CSV or JSON
                          file becomes a view, as does each folder of them and each Iceberg table;
                          each SQLite or DuckDB file is attached, its tables also as views.
   -c, --config FILE      a server.toml (the Docker image's format); flags override it
-  -m, --mapping GLOB     R2RML (.ttl) or YARRRML (.yml) mapping file(s) for SPARQL and MCP
+  -m, --mapping GLOB     R2RML (.ttl) or YARRRML (.yml) mapping file(s) for the graph (SPARQL, OData,
+                         MCP); reloaded when they change
   -o, --ontology GLOB    ontology file(s): class and property hierarchies, inverses, transitivity
-  -i, --init FILE        a SQL script run after discovery, e.g. views over the discovered data
+  -i, --init FILE        a SQL script run after discovery, e.g. views over the discovered data; run
+                         again when it changes
       --host HOST        address to listen on (default 127.0.0.1)
       --http-port PORT   SPARQL (/sparql), OData (/odata), MCP (/mcp) and a query page (/) (default 9495)
       --pg-port PORT     PostgreSQL wire protocol (default 5433; 0 turns it off)
@@ -276,11 +286,15 @@ int main(int argc, char **argv) {
 	bool no_kafka_cdc = false;
 	std::string tableflow_arg;
 	bool no_lock_down = false, require_token = false;
+	bool help = false;
+	std::string help_topic;
 	try {
 		std::string config_file;
 		for (int i = 1; i < argc; i++) {
 			std::string a = argv[i];
-			if (a == "-h" || a == "--help") {
+			if (i == 1 && a == "help") {
+				help = true;
+			} else if (a == "-h" || a == "--help") {
 				Usage();
 				return 0;
 			} else if (a == "-v" || a == "--version") {
@@ -317,6 +331,8 @@ int main(int argc, char **argv) {
 				no_lock_down = true;
 			} else if (!a.empty() && a[0] == '-') {
 				throw std::runtime_error("unknown option " + a + " (see --help)");
+			} else if (help && help_topic.empty()) {
+				help_topic = a;
 			} else if (data_dir_arg.empty()) {
 				data_dir_arg = a;
 			} else {
@@ -380,6 +396,21 @@ int main(int argc, char **argv) {
 	if (token.empty() && std::getenv("DUCKGRAPHLAKE_TOKEN")) {
 		token = std::getenv("DUCKGRAPHLAKE_TOKEN");
 	}
+	if (help) {
+		// Before anything is opened or checked: help works with no data folder at all.
+		auto values = GuideValues(config, token.empty() ? config.token : token);
+		if (help_topic.empty()) {
+			std::cout << Guide("overview", values).text << "\n" << GuideIndex(values);
+			return 0;
+		}
+		try {
+			std::cout << Guide(help_topic, values).text;
+		} catch (std::exception &ex) {
+			std::cerr << ex.what();
+			return 2;
+		}
+		return 0;
+	}
 	if (token.empty()) {
 		token = config.token;
 	}
@@ -433,23 +464,44 @@ int main(int argc, char **argv) {
 		if (exposed.empty()) {
 			Log("  (no data files found)");
 		}
-		if (!config.init_sql.empty()) {
+		if (!config.mapping.empty() && GlobFiles(con, config.mapping).empty()) {
+			throw std::runtime_error("no mapping files match " + config.mapping);
+		}
+		// The model: per-app schemas over the topic tables, the effective mapping (configured, agents',
+		// generated for CDC entities) and agents' views. Kept up to date while the server runs.
+		LakeModel model(db, config);
+		model.Refresh();
+		auto run_init = [&]() {
+			if (config.init_sql.empty()) {
+				return;
+			}
 			std::ifstream in(config.init_sql);
 			if (!in) {
 				throw std::runtime_error("cannot read " + config.init_sql);
 			}
 			std::stringstream sql;
 			sql << in.rdbuf();
-			Exec(con, sql.str());
+			duckdb::Connection init_con(db);
+			Exec(init_con, sql.str());
 			Log("ran " + config.init_sql);
+		};
+		run_init();
+		for (auto &problem : model.RestoreViews()) {
+			Log("  agent view not created: " + problem);
 		}
-		ConfigureSparql(con, config);
-		Log("mapping: " + (config.mapping.empty() ? std::string("(none: SPARQL and MCP are off)") : config.mapping));
-		if (!config.mapping.empty() && GlobFiles(con, config.mapping).empty()) {
-			throw std::runtime_error("no mapping files match " + config.mapping);
+		auto mapping_glob = model.MappingGlob();
+		ConfigureSparql(con, config, mapping_glob);
+		{
+			std::string files;
+			for (auto &f : model.MappingFiles()) {
+				files += (files.empty() ? "" : ", ") + f.name + " (" + f.origin + ")";
+			}
+			Log("mapping: " + (files.empty() ? std::string("(none yet: the graph, OData and the MCP graph tools appear "
+			                                               "with the first CDC topic or mapping)")
+			                                 : files));
 		}
-		if (!config.mapping.empty() && config.detect_keys) {
-			auto keys = DetectKeys(con, exposed, config.mapping);
+		if (model.HasMapping() && config.detect_keys) {
+			auto keys = DetectKeys(con, exposed, mapping_glob);
 			if (!config.unique_keys.empty()) {
 				keys.push_back(config.unique_keys); // hand-written keys add to the detected ones
 			}
@@ -470,7 +522,7 @@ int main(int argc, char **argv) {
 			Exec(con, "LOAD iceberg");
 		}
 		if (config.lock_down) {
-			LockDown(con, config);
+			LockDown(con, config, {model.MappingDir(), model.MappingDir() + "-check"});
 		}
 
 		auto quack = config.host + ":" + std::to_string(config.sql_port);
@@ -481,12 +533,18 @@ int main(int argc, char **argv) {
 			pg.Start(config.host, config.pg_port);
 		}
 
-		SparqlExecutor executor(db, config.mapping, config.timeout_seconds);
-		McpServer mcp(db, executor, config, ontology_files);
+		SparqlExecutor executor(db, mapping_glob, config.timeout_seconds);
+		McpContext mcp_context;
+		mcp_context.guide_values = GuideValues(config, token);
+		McpServer mcp(db, executor, config, ontology_files, mcp_context);
 		ODataService odata(db, executor, config.odata_max_page);
-		bool serve_odata = config.odata_enabled && !config.mapping.empty();
-		if (serve_odata) {
-			odata.Load(config.mapping, ontology_files);
+		bool serve_odata = config.odata_enabled;
+		if (serve_odata && model.HasMapping()) {
+			try {
+				odata.Load(mapping_glob, ontology_files);
+			} catch (std::exception &ex) {
+				Log("odata: " + std::string(ex.what()));
+			}
 		}
 		httplib::Server http;
 		g_http = &http;
@@ -494,8 +552,8 @@ int main(int argc, char **argv) {
 		std::signal(SIGTERM, Stop);
 		std::signal(SIGPIPE, SIG_IGN); // a client closing its socket must not kill the server
 
-		bool serve_sparql = config.sparql_enabled && !config.mapping.empty();
-		bool serve_mcp_flag = config.mcp_enabled && !config.mapping.empty();
+		bool serve_sparql = config.sparql_enabled;
+		bool serve_mcp_flag = config.mcp_enabled;
 		auto base = "http://" + config.host + ":" + std::to_string(config.http_port);
 		bool default_token = token == "duckgraphlake";
 		std::vector<ApiEndpoint> endpoints;
@@ -517,7 +575,7 @@ int main(int argc, char **argv) {
 			     "SPARQL 1.1 Protocol: GET or POST a query; JSON, XML, CSV, TSV or Turtle results." +
 			         std::string(config.SparqlAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
 		}
-		if (config.odata_enabled && !config.mapping.empty()) {
+		if (config.odata_enabled) {
 			endpoints.push_back(
 			    {"OData", base + "/odata",
 			     "OData v4, one entity set per class: Mendix external entities. $metadata describes it." +
@@ -525,7 +583,8 @@ int main(int argc, char **argv) {
 		}
 		if (serve_mcp_flag) {
 			endpoints.push_back({"MCP", base + "/mcp",
-			                     "Model Context Protocol over streamable HTTP, for agents." +
+			                     "Model Context Protocol over streamable HTTP, for agents: tables, SQL, topics, "
+			                     "the graph, and help (the guide tool)." +
 			                         std::string(config.McpAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
 		}
 		IcebergCatalog catalog(config.data_dir);
@@ -546,9 +605,37 @@ int main(int argc, char **argv) {
 			     "WarpStream Tableflow's; committed every " +
 			         std::to_string(config.kafka_flush_ms) + " ms."});
 		}
+		endpoints.push_back({"Help", base + "/api/guide",
+		                     "How to connect apps and agents: the help topics (also `duckgraphlake help`)."});
 		Api api(db, config, config.timeout_seconds);
 		api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
 		std::mutex exposed_mutex;
+		// Called whenever tables, views or mappings may have changed: rebuilds the per-app views, the
+		// generated mappings, and what OData, MCP and the catalog know.
+		std::mutex reload_mutex;
+		auto reload = [&](const std::string &why) {
+			std::lock_guard<std::mutex> lock(reload_mutex);
+			try {
+				if (model.Refresh()) {
+					if (model.HasMapping() && serve_odata) {
+						odata.Load(mapping_glob, ontology_files);
+					} else {
+						odata.Clear();
+					}
+					mcp.Invalidate();
+					Log("model: mapping changed (" + why + "): " + std::to_string(odata.Sets().size()) +
+					    " OData entity set(s)");
+				}
+			} catch (std::exception &ex) {
+				Log("model: " + why + ": " + duckdb::ErrorData(ex).RawMessage());
+			}
+			std::lock_guard<std::mutex> exposed_lock(exposed_mutex);
+			api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
+		};
+		mcp_context.model = &model;
+		mcp_context.api = &api;
+		mcp_context.odata = &odata;
+		mcp_context.reload = reload;
 		if (config.kafka_port) {
 			KafkaLakeOptions options;
 			options.data_dir = config.data_dir;
@@ -574,24 +661,48 @@ int main(int argc, char **argv) {
 					    duckdb::Connection view_con(db);
 					    Exec(view_con, "CREATE OR REPLACE VIEW " + SqlIdent(table) + " AS " + IcebergView(folder));
 					    auto current = ChangeEventCurrentView(view_con, table);
-					    std::lock_guard<std::mutex> lock(exposed_mutex);
-					    exposed.push_back({"iceberg", table, folder});
-					    if (!current.empty()) {
-						    exposed.push_back({"view", current, "latest state per key of " + table});
+					    {
+						    std::lock_guard<std::mutex> lock(exposed_mutex);
+						    exposed.push_back({"iceberg", table, folder});
+						    if (!current.empty()) {
+							    exposed.push_back({"view", current, "latest state per key of " + table});
+						    }
 					    }
-					    api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
 					    Log("kafka: table " + table + " is queryable");
+					    reload("new table " + table);
 				    } catch (std::exception &ex) {
 					    Log("kafka: no view for " + table + ": " + duckdb::ErrorData(ex).RawMessage());
 				    }
 			    });
+			lake->SetChangeCallback([&](const std::string &table, const std::string &) {
+				reload("changed table " + table); // a new column, or a new kind of event
+			});
+			mcp_context.topics = [&]() {
+				std::vector<TopicState> states;
+				auto buffered = lake->Buffered();
+				for (auto &t : lake->Topics()) {
+					TopicState s;
+					s.topic = t.first;
+					s.table = lake->TableFor(t.first);
+					s.partitions = t.second;
+					s.buffered = buffered.count(t.first) ? buffered[t.first] : 0;
+					states.push_back(s);
+				}
+				return states;
+			};
 			lake->Start();
 			kafka = std::make_unique<KafkaServer>(*lake, advertised, config.kafka_port);
 			kafka->Start(config.host, config.kafka_port);
 		}
-		bool serve_mcp = config.mcp_enabled && !config.mapping.empty();
+		bool serve_mcp = config.mcp_enabled;
 		if (serve_sparql) {
 			auto handler = [&](const httplib::Request &req, httplib::Response &res) {
+				if (!model.HasMapping()) {
+					SetCors(config, res);
+					return Text(res, 503,
+					            "there is no graph yet: no mapping. One is generated when a CDC topic arrives; "
+					            "or give --mapping, or set one over MCP (duckgraphlake help graph)");
+				}
 				HandleSparql(config, executor, token, req, res);
 			};
 			http.Get("/sparql", handler);
@@ -689,6 +800,36 @@ int main(int argc, char **argv) {
 			}
 			return true;
 		};
+		auto guide_values = GuideValues(config, token);
+		http.Get("/api/guide", [&](const httplib::Request &, httplib::Response &res) {
+			Json topics = Json::Array();
+			for (auto &t : GuideTopics(guide_values)) {
+				Json item = Json::Object();
+				item.Set("topic", t.name);
+				item.Set("about", t.summary);
+				item.Set("url", base + "/api/guide/" + t.name);
+				topics.Push(item);
+			}
+			Json body = Json::Object();
+			body.Set("topics", topics);
+			body.Set("start", base + "/api/guide/agents");
+			res.set_content(body.Dump(), "application/json");
+		});
+		http.Get(R"(/api/guide/([A-Za-z0-9_-]+))", [&](const httplib::Request &req, httplib::Response &res) {
+			try {
+				res.set_content(Guide(req.matches[1], guide_values).text, "text/markdown; charset=utf-8");
+			} catch (std::exception &ex) {
+				Text(res, 404, ex.what());
+			}
+		});
+		http.Get("/api/topics", [&](const httplib::Request &req, httplib::Response &res) {
+			if (!api_auth(req, res)) {
+				return;
+			}
+			Json body = Json::Object();
+			body.Set("topics", mcp_context.topics ? TopicReport(db, model, mcp_context.topics()) : Json::Array());
+			res.set_content(body.Dump(), "application/json");
+		});
 		http.Get("/api/catalog", [&](const httplib::Request &req, httplib::Response &res) {
 			if (api_auth(req, res)) {
 				res.set_content(api.Catalog().Dump(), "application/json");
@@ -717,7 +858,8 @@ int main(int argc, char **argv) {
 		});
 		http.set_error_handler([](const httplib::Request &, httplib::Response &res) {
 			if (res.body.empty()) {
-				Text(res, res.status, res.status == 404 ? "not found: the endpoints are /sparql and /mcp" : "error");
+				Text(res, res.status,
+				     res.status == 404 ? "not found: GET /api/guide lists the help topics and endpoints" : "error");
 			}
 		});
 		if (!http.bind_to_port(config.host, config.http_port)) {
@@ -755,7 +897,47 @@ int main(int argc, char **argv) {
 			    std::to_string(config.templates.size()) + " template tool(s))");
 		}
 		Log("Web UI  " + base + "/  (catalog, queries, connection details)");
+		// The configured mapping files and the init script are watched: a change reloads them.
+		std::atomic<bool> watching {true};
+		std::mutex watch_mutex;
+		std::condition_variable watch_cv;
+		auto file_stamp = [](const std::string &path) {
+			std::error_code ec;
+			return path.empty() ? std::string()
+			                    : std::to_string(fs::last_write_time(path, ec).time_since_epoch().count()) + "/" +
+			                          std::to_string(fs::file_size(path, ec));
+		};
+		std::thread watcher([&]() {
+			auto last = model.WatchStamp();
+			auto last_init = file_stamp(config.init_sql);
+			std::unique_lock<std::mutex> lock(watch_mutex);
+			while (!watch_cv.wait_for(lock, std::chrono::seconds(2), [&]() { return !watching.load(); })) {
+				std::string now;
+				try {
+					now = model.WatchStamp();
+				} catch (std::exception &) {
+					continue;
+				}
+				if (now == last) {
+					continue;
+				}
+				last = now;
+				auto init_now = file_stamp(config.init_sql);
+				if (init_now != last_init) {
+					last_init = init_now;
+					try {
+						run_init();
+					} catch (std::exception &ex) {
+						Log("init: " + duckdb::ErrorData(ex).RawMessage());
+					}
+				}
+				reload("files changed");
+			}
+		});
 		http.listen_after_bind();
+		watching = false;
+		watch_cv.notify_all();
+		watcher.join();
 		Log("stopping");
 		if (kafka) {
 			kafka->Stop();

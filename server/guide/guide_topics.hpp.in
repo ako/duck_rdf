@@ -1,0 +1,13 @@
+// Generated at configure time from server/guide/*.md: the help topics, in file order.
+#pragma once
+
+#include <utility>
+#include <vector>
+
+namespace dgl {
+inline const std::vector<std::pair<const char *, const char *>> &GuideSources() {
+	static const std::vector<std::pair<const char *, const char *>> topics {
+@GUIDE_ENTRIES@	};
+	return topics;
+}
+} // namespace dgl

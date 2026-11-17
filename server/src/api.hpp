@@ -16,6 +16,7 @@
 
 #include "duckdb.hpp"
 
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -32,7 +33,7 @@ public:
 	    : db_(db), config_(config), timeout_(timeout_seconds) {
 	}
 
-	// Builds the catalog once; the data folder does not change while the server runs.
+	// Builds the catalog; called again whenever tables, views or the mapping change.
 	void Build(const std::vector<Exposed> &exposed, const ODataService *odata,
 	           const std::vector<std::string> &ontology_files, const std::vector<ApiEndpoint> &endpoints);
 
@@ -43,6 +44,8 @@ public:
 	// Throws std::runtime_error with DuckDB's message.
 	Json TablePreview(const std::string &name, int64_t limit) const;
 	Json RunSql(const std::string &sql, int64_t max_rows) const;
+	// A table or view of the catalog (name, or schema.name outside main) as SQL; "" when unknown.
+	std::string SqlRef(const std::string &name) const;
 
 private:
 	Json QueryToJson(duckdb::Connection &con, const std::string &sql, int64_t max_rows) const;
@@ -52,7 +55,7 @@ private:
 	double timeout_;
 	mutable std::mutex mutex_;
 	Json catalog_;
-	std::vector<std::string> own_objects_; // tables and views a preview may read
+	std::map<std::string, std::string> own_objects_; // tables and views a preview may read: name -> SQL
 };
 
 } // namespace dgl

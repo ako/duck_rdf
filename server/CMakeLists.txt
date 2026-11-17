@@ -26,6 +26,20 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html" UI_HTML)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/ui/ui_page.hpp.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/ui_page.hpp" @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ui/index.html")
 
+# The help topics (duckgraphlake help, /api/guide, MCP guide), compiled into the binary.
+file(GLOB GUIDE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/guide/*.md")
+list(SORT GUIDE_FILES)
+set(GUIDE_ENTRIES "")
+foreach(guide_file ${GUIDE_FILES})
+  get_filename_component(guide_stem "${guide_file}" NAME_WE)
+  string(REGEX REPLACE "^[0-9]+-" "" guide_topic "${guide_stem}")
+  file(READ "${guide_file}" guide_text)
+  string(APPEND GUIDE_ENTRIES "    {\"${guide_topic}\", R\"GUIDE(${guide_text})GUIDE\"},\n")
+endforeach()
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/guide/guide_topics.hpp.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/generated/guide_topics.hpp" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GUIDE_FILES})
+
 file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 add_executable(duckgraphlake ${SERVER_SOURCES})
 target_include_directories(

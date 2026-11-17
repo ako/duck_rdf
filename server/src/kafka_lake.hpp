@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -82,8 +83,17 @@ public:
 	KafkaLake(KafkaLakeOptions options, IcebergCatalog &catalog, TableCallback on_table);
 	~KafkaLake();
 
+	// Called after a commit that changed a table's shape (a column added) or brought a new
+	// (ce_source, ce_type) pair of event headers. Set before Start.
+	void SetChangeCallback(TableCallback on_change) {
+		on_change_ = std::move(on_change);
+	}
+
 	void Start();
 	void Stop();
+
+	// Records received but not yet committed, per topic.
+	std::map<std::string, int64_t> Buffered();
 
 	int Partitions(const std::string &topic);                   // 0: no such topic
 	void CreateTopic(const std::string &topic, int partitions); // idempotent
@@ -109,6 +119,9 @@ private:
 	KafkaLakeOptions options_;
 	IcebergCatalog &catalog_;
 	TableCallback on_table_;
+	TableCallback on_change_;
+	std::set<std::string> event_kinds_;    // topic + ce_source + ce_type seen (under mutex_)
+	std::set<std::string> changed_topics_; // a new event kind since the last commit (under mutex_)
 	std::unique_ptr<duckdb::DuckDB> db_;
 	std::unique_ptr<duckdb::Connection> append_con_;
 

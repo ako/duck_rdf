@@ -337,7 +337,7 @@ std::vector<Exposed> Discover(duckdb::Connection &con, const Config &config) {
 	return exposed;
 }
 
-void ConfigureSparql(duckdb::Connection &con, const Config &config) {
+void ConfigureSparql(duckdb::Connection &con, const Config &config, const std::string &mapping_glob) {
 	Exec(con, std::string("SET GLOBAL sparql_typed_results = ") + (config.typed_results ? "true" : "false"));
 	if (!config.ontology.empty()) {
 		Exec(con, "SET GLOBAL sparql_ontology = " + SqlLiteral(config.ontology));
@@ -345,9 +345,9 @@ void ConfigureSparql(duckdb::Connection &con, const Config &config) {
 	if (!config.unique_keys.empty()) {
 		Exec(con, "SET GLOBAL sparql_unique_keys = " + SqlLiteral(config.unique_keys));
 	}
-	if (!config.mapping.empty()) {
+	{
 		// Macros, so SQL clients write sparql('...') instead of repeating the mapping path.
-		auto mapping = SqlLiteral(config.mapping);
+		auto mapping = SqlLiteral(mapping_glob);
 		Exec(con, "CREATE MACRO sparql(q) AS TABLE SELECT * FROM execute_sparql(q, " + mapping + ")");
 		Exec(con, "CREATE MACRO sparql_sql(q) AS sparql_to_sql(q, " + mapping + ")");
 	}
@@ -405,8 +405,8 @@ std::string GlobRoot(const std::string &pattern) {
 
 } // namespace
 
-void LockDown(duckdb::Connection &con, const Config &config) {
-	std::set<std::string> dirs;
+void LockDown(duckdb::Connection &con, const Config &config, const std::vector<std::string> &extra_dirs) {
+	std::set<std::string> dirs(extra_dirs.begin(), extra_dirs.end());
 	dirs.insert(fs::absolute(config.data_dir).lexically_normal().string());
 	if (!config.config_dir.empty()) {
 		dirs.insert(config.config_dir);

@@ -720,7 +720,7 @@ void ODataService::Load(const std::string &mapping, const std::vector<std::strin
 		}
 	}
 
-	sets_.clear();
+	std::vector<ODataEntitySet> loaded;
 	std::set<std::string> set_names;
 	std::map<std::string, std::string> set_of_class;
 	for (auto &entry : classes) {
@@ -728,7 +728,7 @@ void ODataService::Load(const std::string &mapping, const std::vector<std::strin
 		set.class_iri = entry.first;
 		set.name = Unique(Identifier(entry.first), set_names);
 		set_of_class[entry.first] = set.name;
-		sets_.push_back(set);
+		loaded.push_back(set);
 	}
 	// An OData navigation property has one target type. A reference that can point to several
 	// classes (several triples maps share the object's IRI template) navigates to the class that
@@ -776,7 +776,7 @@ void ODataService::Load(const std::string &mapping, const std::vector<std::strin
 		}
 		return chosen;
 	};
-	for (auto &set : sets_) {
+	for (auto &set : loaded) {
 		std::set<std::string> names {"ID"};
 		for (auto &entry : classes[set.class_iri]) {
 			auto &info = entry.second;
@@ -800,6 +800,13 @@ void ODataService::Load(const std::string &mapping, const std::vector<std::strin
 			set.properties.push_back(prop);
 		}
 	}
+	std::unique_lock<std::shared_mutex> lock(mutex_);
+	sets_ = std::move(loaded);
+}
+
+void ODataService::Clear() {
+	std::unique_lock<std::shared_mutex> lock(mutex_);
+	sets_.clear();
 }
 
 const ODataEntitySet *ODataService::FindSet(const std::string &name) const {
@@ -1181,6 +1188,7 @@ ODataResponse ODataService::Navigate(const ODataEntitySet &set, const std::strin
 }
 
 ODataResponse ODataService::Handle(const ODataRequest &request) const {
+	std::shared_lock<std::shared_mutex> lock(mutex_);
 	try {
 		auto path = request.path;
 		while (!path.empty() && path.back() == '/') {
