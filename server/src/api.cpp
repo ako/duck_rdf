@@ -140,12 +140,12 @@ void Api::Build(const std::vector<Exposed> &exposed, const ODataService *odata,
 		columns[row[0]].Push(col);
 	}
 	Json sources = Json::Array();
-	own_objects_.clear();
+	std::vector<std::string> own_objects;
 	for (auto &row : Rows(con, "SELECT table_name, 'table' FROM duckdb_tables() WHERE database_name = "
 	                           "current_database() AND NOT internal UNION ALL SELECT view_name, 'view' FROM "
 	                           "duckdb_views() WHERE database_name = current_database() AND NOT internal AND NOT "
 	                           "temporary ORDER BY 1")) {
-		own_objects_.push_back(row[0]);
+		own_objects.push_back(row[0]);
 		Json source = Json::Object();
 		source.Set("name", row[0]);
 		auto it = by_name.find(row[0]);
@@ -237,7 +237,9 @@ void Api::Build(const std::vector<Exposed> &exposed, const ODataService *odata,
 		}
 	}
 	catalog.Set("classes", classes);
+	std::lock_guard<std::mutex> lock(mutex_);
 	catalog_ = catalog;
+	own_objects_ = own_objects;
 }
 
 Json Api::QueryToJson(duckdb::Connection &con, const std::string &sql, int64_t max_rows) const {
@@ -292,7 +294,12 @@ Json Api::QueryToJson(duckdb::Connection &con, const std::string &sql, int64_t m
 }
 
 Json Api::TablePreview(const std::string &name, int64_t limit) const {
-	if (std::find(own_objects_.begin(), own_objects_.end(), name) == own_objects_.end()) {
+	bool known;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		known = std::find(own_objects_.begin(), own_objects_.end(), name) != own_objects_.end();
+	}
+	if (!known) {
 		throw std::runtime_error("no table or view named " + name);
 	}
 	duckdb::Connection con(db_);
