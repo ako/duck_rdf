@@ -19,4 +19,14 @@ python3 client.py 127.0.0.1:19494 smoke-test-token || status=1
 # The SPARQL client takes a CA file for https; any one will do over http.
 python3 sparql_client.py http://127.0.0.1:19495/sparql smoke-test-token /etc/ssl/certs/ca-certificates.crt || status=1
 python3 mcp_client.py http://127.0.0.1:19495/mcp smoke-test-token || status=1
+# The web UI: its page, and its catalog API (classes from the mapping, sources from discovery).
+curl -sf http://127.0.0.1:19495/ | grep -q '<title>duckgraphlake</title>' && echo "PASS web UI page" || { echo "FAIL web UI page"; status=1; }
+curl -sf -H 'Authorization: Bearer smoke-test-token' http://127.0.0.1:19495/api/catalog | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+classes = {x["name"] for x in c["classes"]}
+sources = {x["name"] for x in c["sources"]}
+ok = {"Employee", "Party"} <= classes and {"emp", "payment", "orders"} <= sources
+print("PASS" if ok else "FAIL", "web UI catalog", sorted(classes), sorted(sources))
+sys.exit(0 if ok else 1)' || status=1
 exit $status

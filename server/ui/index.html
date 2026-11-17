@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>duckgraphlake</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #e4e4e0;
+  --accent: #2f6fde; --accent-soft: #e8effc; --code: #f1f1ee; --bad: #b42318; --bad-soft: #fdecea;
+  --chip: #eef0f3; --row: #fafaf8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141416; --panel: #1c1c1f; --ink: #ececee; --muted: #9a9aa2; --line: #2c2c31;
+    --accent: #7aa7ff; --accent-soft: #1f2a40; --code: #24242a; --bad: #ff8a80; --bad-soft: #3a1f1e;
+    --chip: #26262c; --row: #202024;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+code, .mono, textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+a { color: var(--accent); text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+header { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 52px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+header .brand { font-weight: 650; letter-spacing: -0.01em; }
+header .brand span { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 12.5px; }
+nav { display: flex; gap: 4px; }
+nav button { border: 0; background: none; color: var(--muted); font: inherit; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+nav button.on { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.catalog { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; align-items: start; }
+aside { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; position: sticky; top: 72px; max-height: calc(100vh - 92px); overflow: auto; }
+aside input { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink); font: inherit; }
+aside h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 4px 6px; font-weight: 600; }
+aside ul { list-style: none; margin: 0; padding: 0; }
+aside li { padding: 5px 8px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+aside li:hover { background: var(--row); }
+aside li.on { background: var(--accent-soft); color: var(--accent); }
+aside li small { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }
+.card h4 { margin: 0 0 10px; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.sub { color: var(--muted); }
+.iri { color: var(--muted); word-break: break-all; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; }
+.stats { display: flex; gap: 28px; margin-top: 14px; }
+.stat b { display: block; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+.stat span { color: var(--muted); font-size: 12px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; position: sticky; top: 0; background: var(--panel); }
+tbody tr:hover { background: var(--row); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.null { color: var(--muted); font-style: italic; }
+.scroll { overflow: auto; max-height: 460px; border: 1px solid var(--line); border-radius: 8px; }
+.type { color: var(--muted); font-size: 12px; }
+.actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+button.btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 6px 12px; border-radius: 7px; font: inherit; cursor: pointer; }
+button.btn:hover { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { color: #fff; opacity: 0.9; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; cursor: pointer; background: var(--panel); }
+.tile:hover { border-color: var(--accent); }
+.tile b { display: block; }
+.tile span { color: var(--muted); font-size: 12.5px; }
+.editor { width: 100%; min-height: 180px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); resize: vertical; line-height: 1.5; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); color: var(--muted); padding: 6px 14px; font: inherit; cursor: pointer; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+.bar { display: flex; align-items: center; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+.status { color: var(--muted); font-size: 12.5px; }
+.error { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 10px 14px; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+.endpoint { display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.endpoint:last-child { border-bottom: 0; }
+.endpoint code { background: var(--code); padding: 4px 8px; border-radius: 6px; word-break: break-all; }
+.endpoint .detail { grid-column: 2 / 4; color: var(--muted); font-size: 12.5px; margin-top: -6px; }
+.token { display: none; background: var(--accent-soft); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; align-items: center; gap: 10px; }
+.token input { flex: 1; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+.hidden { display: none !important; }
+@media (max-width: 800px) { .catalog { grid-template-columns: 1fr; } aside { position: static; max-height: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">duckgraphlake<span id="where"></span></div>
+  <nav>
+    <button data-tab="catalog" class="on">Catalog</button>
+    <button data-tab="query">Query</button>
+    <button data-tab="connect">Connect</button>
+  </nav>
+</header>
+<main>
+  <div class="token" id="tokenbar">
+    <span>This server needs its access token.</span>
+    <input id="tokeninput" type="password" placeholder="token">
+    <button class="btn primary" id="tokensave">Use token</button>
+  </div>
+
+  <section id="tab-catalog" class="catalog">
+    <aside>
+      <input id="search" placeholder="Filter classes and tables">
+      <h3>Classes <span id="nclasses"></span></h3>
+      <ul id="classlist"></ul>
+      <h3>Tables and views <span id="nsources"></span></h3>
+      <ul id="sourcelist"></ul>
+    </aside>
+    <div id="detail"></div>
+  </section>
+
+  <section id="tab-query" class="hidden">
+    <div class="bar">
+      <div class="seg"><button data-lang="sparql" class="on">SPARQL</button><button data-lang="sql">SQL</button></div>
+      <button class="btn primary" id="run">Run</button>
+      <span class="status">Ctrl+Enter runs the query</span>
+    </div>
+    <textarea class="editor" id="editor" spellcheck="false"></textarea>
+    <div class="bar"><span class="status" id="qstatus"></span></div>
+    <div id="qresult"></div>
+  </section>
+
+  <section id="tab-connect" class="hidden">
+    <div class="card">
+      <h4>Endpoints</h4>
+      <div id="endpoints"></div>
+    </div>
+    <div class="card">
+      <h4>Server</h4>
+      <div id="serverinfo"></div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined) e.append(kid instanceof Node ? kid : String(kid));
+  return e;
+};
+
+// ---------- access ----------
+let token = "";
+try { token = localStorage.getItem("duckgraphlake-token") || ""; } catch (e) {}
+async function call(url, options = {}) {
+  options.headers = Object.assign({}, options.headers || {});
+  if (token) options.headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(url, options);
+  if (res.status === 401) { $("#tokenbar").style.display = "flex"; throw new Error("this server needs its access token"); }
+  return res;
+}
+$("#tokensave").onclick = () => {
+  token = $("#tokeninput").value.trim();
+  try { localStorage.setItem("duckgraphlake-token", token); } catch (e) {}
+  $("#tokenbar").style.display = "none";
+  load();
+};
+
+// ---------- tabs ----------
+function showTab(name) {
+  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b.dataset.tab === name);
+  for (const t of ["catalog", "query", "connect"]) $("#tab-" + t).classList.toggle("hidden", t !== name);
+}
+for (const b of document.querySelectorAll("nav button")) b.onclick = () => showTab(b.dataset.tab);
+
+// ---------- results ----------
+function cell(v) {
+  if (v === null || v === undefined) return el("td", { class: "null" }, "null");
+  if (typeof v === "number") return el("td", { class: "num" }, String(v));
+  if (typeof v === "boolean") return el("td", {}, String(v));
+  if (typeof v === "object") return el("td", {}, v.ID || JSON.stringify(v));
+  return el("td", {}, String(v));
+}
+function resultTable(columns, rows) {
+  const numeric = columns.map((_, i) => rows.length > 0 && rows.every((r) => r[i] === null || r[i] === undefined || typeof r[i] === "number"));
+  return el("div", { class: "scroll" }, el("table", {},
+    el("thead", {}, el("tr", {}, columns.map((c, i) => el("th", numeric[i] ? { class: "num" } : {}, c)))),
+    el("tbody", {}, rows.map((r) => el("tr", {}, r.map(cell))))));
+}
+function errorBox(text) { return el("div", { class: "error" }, text); }
+
+// ---------- catalog ----------
+let catalog = null;
+let selected = null;
+
+function renderLists() {
+  const q = $("#search").value.toLowerCase();
+  const match = (...texts) => !q || texts.some((t) => (t || "").toLowerCase().includes(q));
+  const classes = catalog.classes.filter((c) => match(c.name, c.label, c.iri));
+  const sources = catalog.sources.filter((s) => match(s.name, s.source));
+  $("#nclasses").textContent = "(" + catalog.classes.length + ")";
+  $("#nsources").textContent = "(" + catalog.sources.length + ")";
+  $("#classlist").replaceChildren(...classes.map((c) => el("li", {
+      class: selected === "class:" + c.name ? "on" : "", onclick: () => showClass(c.name) },
+    el("span", {}, c.label || c.name), el("small", {}, c.properties.length + c.relationships.length + " props"))));
+  $("#sourcelist").replaceChildren(...sources.map((s) => el("li", {
+      class: selected === "source:" + s.name ? "on" : "", onclick: () => showSource(s.name) },
+    el("span", {}, s.name), el("small", {}, s.kind))));
+  if (!classes.length) $("#classlist").append(el("li", { class: "sub" }, catalog.classes.length ? "no match" : "no mapping"));
+}
+
+function overview() {
+  selected = null;
+  renderLists();
+  const s = catalog.server;
+  $("#detail").replaceChildren(
+    el("div", { class: "card" },
+      el("h2", {}, "Catalog"),
+      el("div", { class: "sub" }, s.data_dir),
+      el("div", { class: "stats" },
+        el("div", { class: "stat" }, el("b", {}, catalog.classes.length), el("span", {}, "classes")),
+        el("div", { class: "stat" }, el("b", {}, catalog.sources.length), el("span", {}, "tables and views")),
+        el("div", { class: "stat" }, el("b", {}, catalog.endpoints.length), el("span", {}, "endpoints")))),
+    catalog.classes.length ? el("div", { class: "card" }, el("h4", {}, "Classes"),
+      el("div", { class: "grid" }, catalog.classes.map((c) => el("div", { class: "tile", onclick: () => showClass(c.name) },
+        el("b", {}, c.label || c.name),
+        el("span", {}, c.comment || (c.properties.length + " properties, " + c.relationships.length + " relationships")))))) : null,
+    el("div", { class: "card" }, el("h4", {}, "Tables and views"),
+      el("div", { class: "grid" }, catalog.sources.map((t) => el("div", { class: "tile", onclick: () => showSource(t.name) },
+        el("b", {}, t.name), el("span", {}, t.kind + " · " + t.columns.length + " columns"))))));
+}
+
+function sparqlFor(c) {
+  const vars = c.properties.slice(0, 6).map((p, i) => ({ v: "?" + p.name, p: p.predicate }));
+  return "SELECT ?x " + vars.map((x) => x.v).join(" ") + "\nWHERE {\n  ?x a <" + c.iri + "> .\n" +
+    vars.map((x) => "  OPTIONAL { ?x <" + x.p + "> " + x.v + " }\n").join("") + "}\nLIMIT 100";
+}
+
+async function showClass(name) {
+  const c = catalog.classes.find((x) => x.name === name);
+  selected = "class:" + name;
+  renderLists();
+  const count = el("b", {}, "…");
+  const sample = el("div", { class: "sub" }, "Loading…");
+  const link = (n) => el("a", { onclick: () => showClass(n) }, n);
+  $("#detail").replaceChildren(
+    el("div", { class: "card" },
+      el("h2", {}, c.label || c.name),
+      el("div", { class: "iri mono" }, c.iri),
+      c.comment ? el("p", {}, c.comment) : null,
+      el("div", { class: "stats" },
+        el("div", { class: "stat" }, count, el("span", {}, "instances")),
+        el("div", { class: "stat" }, el("b", {}, c.properties.length), el("span", {}, "properties")),
+        el("div", { class: "stat" }, el("b", {}, c.relationships.length), el("span", {}, "relationships"))),
+      (c.superclasses.length || c.subclasses.length) ? el("div", { class: "chips" },
+        c.superclasses.map((s) => el("span", { class: "chip" }, "is a ", link(s))),
+        c.subclasses.map((s) => el("span", { class: "chip" }, "has subclass ", link(s)))) : null,
+      el("div", { class: "actions" },
+        el("button", { class: "btn", onclick: () => openQuery("sparql", sparqlFor(c)) }, "Query in SPARQL"),
+        el("button", { class: "btn", onclick: () => window.open("odata/" + c.name + "?$top=20", "_blank") }, "Open in OData"))),
+    el("div", { class: "card" }, el("h4", {}, "Properties"),
+      c.properties.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Type"), el("th", {}, "Predicate"))),
+        el("tbody", {}, c.properties.map((p) => el("tr", {},
+          el("td", {}, el("b", {}, p.name), p.comment ? el("div", { class: "sub" }, p.comment) : null),
+          el("td", { class: "type" }, p.type), el("td", { class: "iri mono" }, p.predicate))))) : el("div", { class: "sub" }, "None")),
+    c.relationships.length ? el("div", { class: "card" }, el("h4", {}, "Relationships"),
+      el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Target"), el("th", {}, "Predicate"))),
+        el("tbody", {}, c.relationships.map((r) => el("tr", {},
+          el("td", {}, el("b", {}, r.name)), el("td", {}, link(r.target)), el("td", { class: "iri mono" }, r.predicate)))))) : null,
+    el("div", { class: "card" }, el("h4", {}, "Sample"), sample));
+  try {
+    const n = await call("odata/" + encodeURIComponent(c.name) + "/$count");
+    count.textContent = n.ok ? Number(await n.text()).toLocaleString() : "?";
+  } catch (e) { count.textContent = "?"; }
+  try {
+    const res = await call("odata/" + encodeURIComponent(c.name) + "?$top=10");
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error ? body.error.message : res.statusText);
+    const cols = ["ID", ...c.properties.map((p) => p.name)];
+    sample.replaceWith(body.value.length ? resultTable(cols, body.value.map((e) => cols.map((k) => e[k]))) : el("div", { class: "sub" }, "No instances"));
+  } catch (e) { sample.replaceWith(errorBox(e.message)); }
+}
+
+async function showSource(name) {
+  const s = catalog.sources.find((x) => x.name === name);
+  selected = "source:" + name;
+  renderLists();
+  const preview = el("div", { class: "sub" }, "Loading…");
+  $("#detail").replaceChildren(
+    el("div", { class: "card" },
+      el("h2", {}, s.name),
+      el("div", { class: "sub" }, s.kind + (s.source ? " · " : ""), s.source ? el("span", { class: "mono" }, s.source) : null),
+      el("div", { class: "actions" },
+        el("button", { class: "btn", onclick: () => openQuery("sql", 'SELECT *\nFROM "' + s.name + '"\nLIMIT 100') }, "Query in SQL"))),
+    el("div", { class: "card" }, el("h4", {}, "Columns"),
+      el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Type"))),
+        el("tbody", {}, s.columns.map((c) => el("tr", {}, el("td", {}, c.name), el("td", { class: "type" }, c.type)))))),
+    el("div", { class: "card" }, el("h4", {}, "First rows"), preview));
+  try {
+    const res = await call("api/table?limit=50&name=" + encodeURIComponent(name));
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || res.statusText);
+    preview.replaceWith(resultTable(body.columns.map((c) => c.name), body.rows));
+  } catch (e) { preview.replaceWith(errorBox(e.message)); }
+}
+
+$("#search").oninput = () => catalog && renderLists();
+
+// ---------- query ----------
+let lang = "sparql";
+const drafts = { sparql: "SELECT ?class (COUNT(?x) AS ?instances)\nWHERE { ?x a ?class }\nGROUP BY ?class\nORDER BY DESC(?instances)", sql: "SHOW TABLES" };
+function setLang(l) {
+  drafts[lang] = $("#editor").value;
+  lang = l;
+  for (const b of document.querySelectorAll(".seg button")) b.classList.toggle("on", b.dataset.lang === l);
+  $("#editor").value = drafts[l];
+}
+for (const b of document.querySelectorAll(".seg button")) b.onclick = () => setLang(b.dataset.lang);
+function openQuery(l, text) { showTab("query"); setLang(l); $("#editor").value = text; drafts[l] = text; run(); }
+
+function term(b) {
+  if (!b) return null;
+  if (b.type === "literal" && b.datatype && /#(integer|int|long|decimal|double|float)$/.test(b.datatype)) return Number(b.value);
+  return b.type === "bnode" ? "_:" + b.value : b.value;
+}
+
+async function run() {
+  const text = $("#editor").value;
+  const out = $("#qresult");
+  $("#qstatus").textContent = "Running…";
+  out.replaceChildren();
+  const started = performance.now();
+  try {
+    if (lang === "sparql") {
+      const res = await call("sparql", { method: "POST", headers: { "Content-Type": "application/sparql-query", "Accept": "application/sparql-results+json, text/turtle;q=0.5" }, body: text });
+      const ctype = res.headers.get("Content-Type") || "";
+      if (!res.ok) throw new Error(await res.text());
+      const ms = Math.round(performance.now() - started);
+      if (ctype.includes("json")) {
+        const body = await res.json();
+        if ("boolean" in body) { out.append(el("div", { class: "card" }, el("h2", {}, String(body.boolean)))); $("#qstatus").textContent = ms + " ms"; return; }
+        const vars = body.head.vars;
+        const rows = body.results.bindings.map((b) => vars.map((v) => term(b[v])));
+        out.append(resultTable(vars, rows));
+        $("#qstatus").textContent = rows.length + " rows · " + ms + " ms";
+      } else {
+        const turtle = await res.text();
+        out.append(el("pre", { class: "card mono" }, turtle));
+        $("#qstatus").textContent = turtle.split("\n").filter(Boolean).length + " triples · " + ms + " ms";
+      }
+    } else {
+      const res = await call("api/sql", { method: "POST", headers: { "Content-Type": "text/plain" }, body: text });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || res.statusText);
+      out.append(resultTable(body.columns.map((c) => c.name), body.rows));
+      $("#qstatus").textContent = body.rows.length + (body.truncated ? "+ rows (first 1000)" : " rows") + " · " + body.ms + " ms";
+    }
+  } catch (e) {
+    $("#qstatus").textContent = "";
+    out.append(errorBox(e.message));
+  }
+}
+$("#run").onclick = run;
+$("#editor").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); } });
+$("#editor").value = drafts.sparql;
+
+// ---------- connect ----------
+function renderConnect() {
+  $("#endpoints").replaceChildren(...catalog.endpoints.map((e) => el("div", { class: "endpoint" },
+    el("b", {}, e.name), el("code", {}, e.url),
+    el("button", { class: "btn", onclick: (ev) => { navigator.clipboard.writeText(e.url); ev.target.textContent = "Copied"; setTimeout(() => ev.target.textContent = "Copy", 1200); } }, "Copy"),
+    e.detail ? el("div", { class: "detail" }, e.detail) : null)));
+  const s = catalog.server;
+  $("#serverinfo").replaceChildren(el("table", {}, el("tbody", {},
+    [["Data folder", s.data_dir], ["Mapping", s.mapping || "none"], ["Ontology", s.ontology || "none"], ["DuckDB", s.duckdb]]
+      .map(([k, v]) => el("tr", {}, el("td", { class: "sub" }, k), el("td", { class: "mono" }, v))))));
+}
+
+// ---------- start ----------
+async function load() {
+  try {
+    const res = await call("api/catalog");
+    catalog = await res.json();
+    $("#where").textContent = catalog.server.data_dir;
+    overview();
+    renderConnect();
+    if (!catalog.classes.length) { $("#tab-query .seg button[data-lang=sparql]").disabled = true; setLang("sql"); }
+  } catch (e) {
+    $("#detail").replaceChildren(errorBox(e.message));
+  }
+}
+load();
+</script>
+</body>
+</html>

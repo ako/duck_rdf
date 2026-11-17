@@ -45,6 +45,20 @@ On any other address a token is required, and SPARQL and MCP require it too (as
 By default SQL clients can read only the data, mapping, ontology and config folders and cannot
 change settings (`lock_down`).
 
+## Web UI
+
+`http://127.0.0.1:9495/` is a small catalog and query page, compiled into the binary (no CDN, so
+it works offline):
+
+- **Catalog.** The classes of the graph, with their labels and comments from the ontology, super-
+  and subclasses, properties with their types, relationships, the number of instances and a sample.
+  It also lists the tables and views the folder produced, with their columns and first rows.
+- **Query.** SPARQL (through `/sparql`) and SQL, with results as a table.
+- **Connect.** Every endpoint's address, to copy, and the server's settings.
+
+Its data comes from `/api/catalog`, `/api/table` and `/api/sql`, plus `/odata` and `/sparql`; they
+need the token wherever SPARQL does, and the page asks for it then. YASGUI is still at `/yasgui`.
+
 ## Connect
 
 SQL from a PostgreSQL client, such as Mendix's external database connector (PostgreSQL) or psql:

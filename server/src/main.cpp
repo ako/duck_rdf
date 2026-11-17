@@ -7,6 +7,7 @@
 //   MCP     an MCP server for agents at http://host:port/mcp
 //
 // The same configuration file as the Docker image (server.example.toml) works here; flags override it.
+#include "api.hpp"
 #include "config.hpp"
 #include "json.hpp"
 #include "log.hpp"
@@ -15,6 +16,7 @@
 #include "pgwire.hpp"
 #include "setup.hpp"
 #include "sparql.hpp"
+#include "ui_page.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -241,7 +243,7 @@ void HandleMcp(const Config &config, McpServer &mcp, const std::string &token, c
 	res.set_content(reply->Dump(), "application/json");
 }
 
-std::string QueryPage(const Config &config) {
+std::string YasguiPage(const Config &config) {
 	// YASGUI from a CDN, pointed at this server's endpoint.
 	return R"(<!doctype html>
 <html><head><meta charset="utf-8"><title>duckgraphlake</title>
@@ -452,6 +454,41 @@ int main(int argc, char **argv) {
 		std::signal(SIGTERM, Stop);
 
 		bool serve_sparql = config.sparql_enabled && !config.mapping.empty();
+		bool serve_mcp_flag = config.mcp_enabled && !config.mapping.empty();
+		auto base = "http://" + config.host + ":" + std::to_string(config.http_port);
+		bool default_token = token == "duckgraphlake";
+		std::vector<ApiEndpoint> endpoints;
+		auto token_note = default_token ? std::string("the token 'duckgraphlake'") : std::string("the server's token");
+		if (config.pg_port) {
+			auto hostport = config.host + ":" + std::to_string(config.pg_port);
+			endpoints.push_back({"PostgreSQL", "jdbc:postgresql://" + hostport + "/lake?sslmode=disable",
+			                     "SQL (DuckDB's) for Mendix's external database connector, psql or any PostgreSQL "
+			                     "driver. Any user name; the password is " +
+			                         token_note + "."});
+		}
+		endpoints.push_back({"Quack", "quack:" + config.host + ":" + std::to_string(config.sql_port),
+		                     "SQL for DuckDB clients: LOAD quack; ATTACH 'quack:" + config.host + ":" +
+		                         std::to_string(config.sql_port) + "' AS lake (TOKEN '...'), with " + token_note +
+		                         "."});
+		if (serve_sparql) {
+			endpoints.push_back(
+			    {"SPARQL", base + "/sparql",
+			     "SPARQL 1.1 Protocol: GET or POST a query; JSON, XML, CSV, TSV or Turtle results." +
+			         std::string(config.SparqlAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
+		}
+		if (config.odata_enabled && !config.mapping.empty()) {
+			endpoints.push_back(
+			    {"OData", base + "/odata",
+			     "OData v4, one entity set per class: Mendix external entities. $metadata describes it." +
+			         std::string(config.ODataAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
+		}
+		if (serve_mcp_flag) {
+			endpoints.push_back({"MCP", base + "/mcp",
+			                     "Model Context Protocol over streamable HTTP, for agents." +
+			                         std::string(config.McpAnonymous() ? "" : " Send Authorization: Bearer <token>.")});
+		}
+		Api api(db, config, config.timeout_seconds);
+		api.Build(exposed, serve_odata ? &odata : nullptr, ontology_files, endpoints);
 		bool serve_mcp = config.mcp_enabled && !config.mapping.empty();
 		if (serve_sparql) {
 			auto handler = [&](const httplib::Request &req, httplib::Response &res) {
@@ -509,13 +546,53 @@ int main(int argc, char **argv) {
 			http.Get("/mcp", no_stream);
 			http.Delete("/mcp", no_stream);
 		}
+		// The web UI and its API. The page itself is public; its data needs the token where SPARQL does.
 		http.Get("/", [&](const httplib::Request &, httplib::Response &res) {
-			if (serve_sparql) {
-				res.set_content(QueryPage(config), "text/html; charset=utf-8");
-			} else {
-				Text(res, 200,
-				     "duckgraphlake: SQL on port " + std::to_string(config.sql_port) +
-				         "; start with --mapping for SPARQL and MCP");
+			res.set_content(UI_PAGE, "text/html; charset=utf-8");
+		});
+		if (serve_sparql) {
+			http.Get("/yasgui", [&](const httplib::Request &, httplib::Response &res) {
+				res.set_content(YasguiPage(config), "text/html; charset=utf-8");
+			});
+		}
+		auto api_error = [](httplib::Response &res, int status, const std::string &message) {
+			Json body = Json::Object();
+			body.Set("error", message);
+			res.status = status;
+			res.set_content(body.Dump(), "application/json");
+		};
+		auto api_auth = [&](const httplib::Request &req, httplib::Response &res) {
+			if (!config.SparqlAnonymous() && !Authorized(req, token)) {
+				res.set_header("WWW-Authenticate", "Bearer realm=\"api\"");
+				api_error(res, 401, "send Authorization: Bearer <token>");
+				return false;
+			}
+			return true;
+		};
+		http.Get("/api/catalog", [&](const httplib::Request &req, httplib::Response &res) {
+			if (api_auth(req, res)) {
+				res.set_content(api.Catalog().Dump(), "application/json");
+			}
+		});
+		http.Get("/api/table", [&](const httplib::Request &req, httplib::Response &res) {
+			if (!api_auth(req, res)) {
+				return;
+			}
+			try {
+				auto limit = req.has_param("limit") ? std::stoll(req.get_param_value("limit")) : 50;
+				res.set_content(api.TablePreview(req.get_param_value("name"), limit).Dump(), "application/json");
+			} catch (std::exception &ex) {
+				api_error(res, 400, ex.what());
+			}
+		});
+		http.Post("/api/sql", [&](const httplib::Request &req, httplib::Response &res) {
+			if (!api_auth(req, res)) {
+				return;
+			}
+			try {
+				res.set_content(api.RunSql(req.body, 1000).Dump(), "application/json");
+			} catch (std::exception &ex) {
+				api_error(res, 400, ex.what());
 			}
 		});
 		http.set_error_handler([](const httplib::Request &, httplib::Response &res) {
@@ -527,8 +604,6 @@ int main(int argc, char **argv) {
 			throw std::runtime_error("cannot listen on " + config.host + ":" + std::to_string(config.http_port));
 		}
 
-		auto base = "http://" + config.host + ":" + std::to_string(config.http_port);
-		bool default_token = token == "duckgraphlake";
 		if (config.pg_port) {
 			Log("SQL     postgresql://" + config.host + ":" + std::to_string(config.pg_port) +
 			    "  (PostgreSQL protocol, DuckDB SQL; any user, password = the token" +
@@ -542,7 +617,7 @@ int main(int argc, char **argv) {
 		    "  after, once on that machine: CREATE PERSISTENT SECRET (TYPE quack, TOKEN '...')");
 		if (serve_sparql) {
 			Log("SPARQL  " + base + "/sparql" + (config.SparqlAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
-			    "; a query page at " + base + "/");
+			    "; YASGUI at " + base + "/yasgui");
 		}
 		if (serve_odata) {
 			Log("OData   " + base + "/odata" + (config.ODataAnonymous() ? "" : "  (Authorization: Bearer <token>)") +
@@ -552,6 +627,7 @@ int main(int argc, char **argv) {
 			Log("MCP     " + base + "/mcp" + (config.McpAnonymous() ? "" : "  (Authorization: Bearer <token>)") + " (" +
 			    std::to_string(config.templates.size()) + " template tool(s))");
 		}
+		Log("Web UI  " + base + "/  (catalog, queries, connection details)");
 		http.listen_after_bind();
 		Log("stopping");
 	} catch (std::exception &ex) {
