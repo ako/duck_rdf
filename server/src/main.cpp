@@ -1,6 +1,7 @@
 // duckgraphlake: point it at a folder of data files and get, from one process,
 //
-//   SQL     over DuckDB's Quack protocol (DuckDB CLI, Python, JDBC: Mendix's external database connector)
+//   SQL     over the PostgreSQL wire protocol (psql, the PostgreSQL JDBC driver: Mendix's external database
+//           connector) and over DuckDB's Quack protocol (DuckDB CLI, Python, DuckDB's JDBC driver)
 //   SPARQL  a SPARQL 1.1 Protocol endpoint at http://host:port/sparql, over an R2RML/YARRRML mapping
 //   MCP     an MCP server for agents at http://host:port/mcp
 //
@@ -9,6 +10,7 @@
 #include "json.hpp"
 #include "log.hpp"
 #include "mcp.hpp"
+#include "pgwire.hpp"
 #include "setup.hpp"
 #include "sparql.hpp"
 
@@ -50,6 +52,7 @@ Usage: duckgraphlake [options] [DATA_DIR]
   -o, --ontology GLOB    ontology file(s): class and property hierarchies, inverses, transitivity
       --host HOST        address to listen on (default 127.0.0.1)
       --http-port PORT   SPARQL (/sparql), MCP (/mcp) and a query page (/) (default 9495)
+      --pg-port PORT     PostgreSQL wire protocol (default 5433; 0 turns it off)
       --sql-port PORT    DuckDB Quack protocol (default 9494)
       --token TOKEN      access token (or DUCKGRAPHLAKE_TOKEN); required unless on a loopback address
       --require-token    SPARQL and MCP also need the token on a loopback address
@@ -255,7 +258,7 @@ copyEndpointOnNewTab: true});</script>
 int main(int argc, char **argv) {
 	Config config;
 	std::string data_dir_arg, mapping_arg, ontology_arg, host_arg, token_arg;
-	int http_port = 0, sql_port = 0;
+	int http_port = 0, sql_port = 0, pg_port = -1;
 	bool no_lock_down = false, require_token = false;
 	try {
 		std::string config_file;
@@ -278,6 +281,8 @@ int main(int argc, char **argv) {
 				host_arg = NeedValue(i, argc, argv);
 			} else if (a == "--http-port") {
 				http_port = std::stoi(NeedValue(i, argc, argv));
+			} else if (a == "--pg-port") {
+				pg_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "--sql-port") {
 				sql_port = std::stoi(NeedValue(i, argc, argv));
 			} else if (a == "--token") {
@@ -318,6 +323,9 @@ int main(int argc, char **argv) {
 	}
 	if (sql_port) {
 		config.sql_port = sql_port;
+	}
+	if (pg_port >= 0) {
+		config.pg_port = pg_port;
 	}
 	if (no_lock_down) {
 		config.lock_down = false;
@@ -405,6 +413,11 @@ int main(int argc, char **argv) {
 		auto quack = config.host + ":" + std::to_string(config.sql_port);
 		Exec(con, "CALL quack_serve(" + SqlLiteral("quack:" + quack) + ", token = " + SqlLiteral(token) + ")");
 
+		PgServer pg(db, token);
+		if (config.pg_port) {
+			pg.Start(config.host, config.pg_port);
+		}
+
 		SparqlExecutor executor(db, config.mapping, config.timeout_seconds);
 		McpServer mcp(db, executor, config, ontology_files);
 		httplib::Server http;
@@ -458,6 +471,13 @@ int main(int argc, char **argv) {
 
 		auto base = "http://" + config.host + ":" + std::to_string(config.http_port);
 		bool default_token = token == "duckgraphlake";
+		if (config.pg_port) {
+			Log("SQL     postgresql://" + config.host + ":" + std::to_string(config.pg_port) +
+			    "  (PostgreSQL protocol, DuckDB SQL; any user, password = the token" +
+			    (default_token ? " 'duckgraphlake'" : "") + ")");
+			Log("          JDBC:    jdbc:postgresql://" + config.host + ":" + std::to_string(config.pg_port) +
+			    "/lake?sslmode=disable");
+		}
 		Log("SQL     quack:" + quack + "  (token " + (default_token ? "'duckgraphlake'" : "as given") + ")");
 		Log("          DuckDB:  LOAD quack; ATTACH 'quack:" + quack + "' AS lake (TOKEN '...'); USE lake;");
 		Log("          JDBC:    jdbc:duckdb:quack:" + quack +

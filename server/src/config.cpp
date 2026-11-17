@@ -57,6 +57,9 @@ void LoadConfigFile(const std::string &path, Config &config) {
 	if (auto p = table["server"]["http_port"].value<int64_t>()) {
 		config.http_port = static_cast<int>(*p);
 	}
+	if (auto p = table["server"]["pg_port"].value<int64_t>()) {
+		config.pg_port = static_cast<int>(*p);
+	}
 	if (auto p = table["server"]["sql_port"].value<int64_t>()) {
 		config.sql_port = static_cast<int>(*p);
 	}

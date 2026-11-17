@@ -35,6 +35,7 @@ struct Config {
 	std::string host = "127.0.0.1";
 	int http_port = 9495; // SPARQL at /sparql, MCP at /mcp, a query page at /
 	int sql_port = 9494;  // DuckDB's Quack protocol
+	int pg_port = 5433;   // PostgreSQL wire protocol (0: off)
 	std::string token;
 	bool lock_down = true;
 

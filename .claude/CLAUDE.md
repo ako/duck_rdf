@@ -164,7 +164,7 @@ State (whether enabled, and which mapping path) lives in a `SparqlParserState` s
 
 ### The duckgraphlake server binary
 
-`server/` builds `duckgraphlake`, one executable serving a data folder over SQL (Quack), SPARQL 1.1 Protocol (`/sparql`) and MCP (`/mcp`): a C++ port of DuckGraphLake's Docker server. It is only built with `-DRDF_BUILD_SERVER=ON` and `server/extension_config.cmake` (which loads *and* statically links httpfs, Quack and SQLite: DuckDB 2.0 links only extensions named in `duckdb_extension_statically_link`); `server/build.sh` does both into `build/server/`. The binary must call `ExtensionHelper::LoadAllExtensions` before use. Test with `server/test/smoke_test.sh` (needs a DuckGraphLake checkout for its clients). See `server/README.md`.
+`server/` builds `duckgraphlake`, one executable serving a data folder over SQL (the PostgreSQL wire protocol in `server/src/pgwire.cpp`, and Quack), SPARQL 1.1 Protocol (`/sparql`) and MCP (`/mcp`): a C++ port of DuckGraphLake's Docker server. It is only built with `-DRDF_BUILD_SERVER=ON` and `server/extension_config.cmake` (which loads *and* statically links httpfs, Quack and SQLite: DuckDB 2.0 links only extensions named in `duckdb_extension_statically_link`); `server/build.sh` does both into `build/server/`. The binary must call `ExtensionHelper::LoadAllExtensions` before use. The PostgreSQL JDBC driver's metadata queries are recognised and answered from DuckDB's catalog in `server/src/pgcompat.cpp` (DuckDB's own pg_catalog has non-PostgreSQL type OIDs). Test with `server/test/smoke_test.sh` and `server/test/pg_test.sh` (both need a DuckGraphLake checkout for its fixture). See `server/README.md`.
 
 ### Not part of the build
 

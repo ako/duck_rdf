@@ -5,7 +5,8 @@ Iceberg, SQLite and DuckDB files, and an R2RML/YARRRML mapping, and it serves
 
 | Endpoint | Where | For |
 | --- | --- | --- |
-| SQL | `quack:127.0.0.1:9494` (DuckDB's Quack protocol) | DuckDB CLI, Python, JDBC (e.g. Mendix's external database connector) |
+| SQL | `postgresql://127.0.0.1:5433` (PostgreSQL wire protocol, DuckDB's SQL) | Mendix's external database connector, psql, any PostgreSQL driver |
+| SQL | `quack:127.0.0.1:9494` (DuckDB's Quack protocol) | DuckDB CLI, Python, DuckDB's JDBC driver |
 | SPARQL | `http://127.0.0.1:9495/sparql` (SPARQL 1.1 Protocol) | RDF tools, REST calls from apps, the query page at `/` |
 | MCP | `http://127.0.0.1:9495/mcp` (streamable HTTP, JSON responses) | agents |
 
@@ -32,7 +33,8 @@ What it finds in `./data`:
 
 Options (`duckgraphlake --help`): `--config server.toml` (the Docker image's format, see
 DuckGraphLake's `server/server.example.toml`; flags override it), `--host`, `--http-port`,
-`--sql-port`, `--token` (or `DUCKGRAPHLAKE_TOKEN`), `--no-lock-down`.
+`--pg-port` (0 turns it off), `--sql-port`, `--token` (or `DUCKGRAPHLAKE_TOKEN`),
+`--require-token`, `--no-lock-down`.
 
 On a loopback address the token defaults to `duckgraphlake` and SPARQL and MCP need no token.
 On any other address a token is required, and SPARQL and MCP require it too (as
@@ -42,6 +44,23 @@ By default SQL clients can read only the data, mapping, ontology and config fold
 change settings (`lock_down`).
 
 ## Connect
+
+SQL from a PostgreSQL client, such as Mendix's external database connector (PostgreSQL) or psql:
+host `127.0.0.1`, port `5433`, any database and user name, the token as password, no SSL.
+
+```
+jdbc:postgresql://127.0.0.1:5433/lake?sslmode=disable
+psql -h 127.0.0.1 -p 5433 -U dev lake
+```
+
+The SQL is DuckDB's, which is close to PostgreSQL's; `sparql('...')` works here too, also with
+the query as a parameter (`SELECT * FROM sparql(?)`). What the endpoint covers: the startup
+handshake (password = token; SSL is refused, so set `sslmode=disable` or `prefer`), simple and
+extended queries with parameters, text and binary formats for the common types, cursors with a
+fetch size, cancel requests, and the session commands drivers send (`SET`, `SHOW`, `BEGIN`, ...).
+The PostgreSQL JDBC driver's metadata calls (`getTables`, `getColumns`, `getPrimaryKeys`,
+`getTypeInfo`, foreign keys) are answered from DuckDB's catalog with PostgreSQL types; they list
+the server's own views and tables. psql's backslash commands (`\dt`) do not work yet.
 
 SQL from DuckDB:
 
@@ -82,12 +101,18 @@ compiles in httpfs, Quack and SQLite (fetched from their DuckDB repositories at 
 DuckDB 2.0.0 pins); the server itself fetches cpp-httplib and toml++. A first build takes
 about an hour on 4 cores.
 
-Test: `DUCKGRAPHLAKE=<DuckGraphLake checkout> server/test/smoke_test.sh` runs the Docker
-image's SQL, SPARQL and MCP test clients against the binary.
+Tests (both need a DuckGraphLake checkout, for its fixture):
+
+- `DUCKGRAPHLAKE=<checkout> server/test/smoke_test.sh` runs the Docker image's SQL (Quack),
+  SPARQL and MCP test clients against the binary.
+- `DUCKGRAPHLAKE=<checkout> server/test/pg_test.sh` runs `server/test/pgjdbc/PgJdbcTest.java`
+  through the PostgreSQL JDBC driver: metadata, parameterized queries (repeated, so the driver
+  switches to server-side prepared statements and binary transfer), typed parameters,
+  transactions with a fetch size, errors. Needs Java and Maven.
 
 ## Known limitations
 
-- **No query parameters over SQL.** Quack (DuckDB 2.0.0) does not forward bound parameters:
+- **No query parameters over Quack.** Quack (DuckDB 2.0.0) does not forward bound parameters:
   `SELECT ... WHERE id = ?` fails with "Values were not provided for the following parameters".
-  Queries without parameters, including `sparql('...')`, work from every client, JDBC included.
+  Use the PostgreSQL endpoint for parameterized queries.
 - No TLS, no hot reload of the mapping or the data folder yet: restart after changing them.
