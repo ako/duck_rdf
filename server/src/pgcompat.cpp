@@ -187,7 +187,7 @@ std::string ReplaceCatalogGaps(const std::string &sql, const std::string &databa
 	}
 	static const char *markers[] = {"pg_catalog", "current_database", "pg_backend_pid", "pg_locks", "pg_database",
 	                                "pg_stat_",   "pg_shdescription", "pg_get_userbyid", "age",      "xmin",
-	                                "pg_roles",   "pg_auth_members",  "pg_timezone_",    "pg_is_in_recovery",
+	                                "pg_roles",   "pg_user",          "pg_auth_members",  "pg_timezone_",    "pg_is_in_recovery",
 	                                "pg_tablespace_location"};
 	bool any = false;
 	for (auto marker : markers) {
@@ -254,6 +254,10 @@ std::string ReplaceCatalogGaps(const std::string &sql, const std::string &databa
 	     "false AS rolcreaterole, false AS rolcreatedb, true AS rolcanlogin, false AS rolreplication, "
 	     "-1::INTEGER AS rolconnlimit, '********' AS rolpassword, NULL::TIMESTAMPTZ AS rolvaliduntil, "
 	     "false AS rolbypassrls, NULL::VARCHAR[] AS rolconfig)"},
+	    {"pg_user",
+	     "(SELECT current_user AS usename, 10::INTEGER AS usesysid, false AS usecreatedb, true AS usesuper, "
+	     "false AS userepl, false AS usebypassrls, '********' AS passwd, NULL::TIMESTAMPTZ AS valuntil, "
+	     "NULL::VARCHAR[] AS useconfig)"},
 	    {"pg_auth_members",
 	     "(SELECT NULL::INTEGER AS oid, NULL::INTEGER AS roleid, NULL::INTEGER AS member, NULL::INTEGER AS grantor, "
 	     "NULL::BOOLEAN AS admin_option, NULL::BOOLEAN AS inherit_option, NULL::BOOLEAN AS set_option WHERE false)"},

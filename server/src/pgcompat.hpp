@@ -21,7 +21,7 @@ std::optional<std::string> RewriteCatalogQuery(const std::string &sql);
 // such as DataGrip: current_database() is the database the client connected to (DuckDB's is
 // "memory"), pg_database lists only that one, pg_backend_pid() is the session's process id,
 // pg_get_userbyid() is current_user, age() of a transaction id is 0, xmin is 0, pg_stat_ssl and
-// pg_stat_activity have this session (without SSL), pg_roles has one role, pg_timezone_names and
+// pg_stat_activity have this session (without SSL), pg_roles and pg_user have one role, pg_timezone_names and
 // pg_timezone_abbrevs are DuckDB's, and pg_locks, pg_shdescription and pg_auth_members are empty.
 // pg_catalog-qualified function calls are made unqualified.
 std::string ReplaceCatalogGaps(const std::string &sql, const std::string &database, int32_t pid);
