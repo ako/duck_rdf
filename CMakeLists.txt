@@ -91,7 +91,7 @@ set(SQL2RDF_GIT_REPOSITORY
 # shared scan for union arms pinned to one keyed row, and MIN/MAX returning the
 # stored term, and star patterns pruned to one scan when classes' IRI templates
 # differ mid-template.
-set(SQL2RDF_PINNED_TAG "690e88aa81a89a682bb5c71ce7e26c836ce5bdb8")
+set(SQL2RDF_PINNED_TAG "c235eff9b7c9023065276ffa0952eee8357fb351")
 # SQL2RDF_GIT_TAG is a cache entry (so the command line can set it), and a
 # cache entry outlives the build directory's first configure: a bump of the pin
 # above would never reach an existing build directory, which would silently
