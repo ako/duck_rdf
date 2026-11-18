@@ -88,9 +88,10 @@ set(SQL2RDF_GIT_REPOSITORY
 # saturation, result term tags, native aggregates, raw-column deduplication, and
 # domain, range, inverse, symmetric and transitive property reasoning, and a
 # shared scan for union arms pinned to one keyed row, and MIN/MAX returning the
-# stored term.
+# stored term, and star patterns pruned to one scan when classes' IRI templates
+# differ mid-template.
 set(SQL2RDF_GIT_TAG
-    "88680fd4e7febadd4cafbd00e2bf3971d5ef570b"
+    "690e88aa81a89a682bb5c71ce7e26c836ce5bdb8"
     CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
 FetchContent_Declare(
   sql2rdf
