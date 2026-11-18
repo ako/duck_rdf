@@ -71,7 +71,8 @@ target_include_directories(${SERD_NAME} PRIVATE ${serd_SOURCE_DIR}/include)
 # exists. The target name MUST be `serd` for that to work
 #
 # Where sql2rdf comes from. Override it on the command line through the
-# extension Makefile's EXT_FLAGS, e.g. EXT_FLAGS="-DSQL2RDF_GIT_TAG=my-branch".
+# extension Makefile's EXT_FLAGS, e.g. EXT_FLAGS="-DSQL2RDF_GIT_TAG=my-branch";
+# pass -DSQL2RDF_GIT_TAG= (empty) to go back to the pinned commit.
 #
 # For local development against a checkout (no fetch, edits picked up on the
 # next build), use CMake's built-in FetchContent override, e.g.
@@ -90,9 +91,36 @@ set(SQL2RDF_GIT_REPOSITORY
 # shared scan for union arms pinned to one keyed row, and MIN/MAX returning the
 # stored term, and star patterns pruned to one scan when classes' IRI templates
 # differ mid-template.
-set(SQL2RDF_GIT_TAG
-    "690e88aa81a89a682bb5c71ce7e26c836ce5bdb8"
-    CACHE STRING "Git tag, branch or commit of sql2rdf to build against")
+set(SQL2RDF_PINNED_TAG "690e88aa81a89a682bb5c71ce7e26c836ce5bdb8")
+# SQL2RDF_GIT_TAG is a cache entry (so the command line can set it), and a
+# cache entry outlives the build directory's first configure: a bump of the pin
+# above would never reach an existing build directory, which would silently
+# keep building the old commit. So the entry follows the pin unless it holds an
+# override - a value other than the pin this directory was last configured
+# with, recorded in SQL2RDF_LAST_PINNED_TAG. A directory configured before that
+# record existed has none; there a full commit hash is taken to be the old pin
+# (the pin always is one; an override is normally a branch or tag).
+string(LENGTH "${SQL2RDF_GIT_TAG}" _sql2rdf_tag_length)
+if(DEFINED SQL2RDF_LAST_PINNED_TAG)
+  set(_sql2rdf_previous_pin "${SQL2RDF_LAST_PINNED_TAG}")
+elseif(SQL2RDF_GIT_TAG MATCHES "^[0-9a-f]+$" AND _sql2rdf_tag_length EQUAL 40) # CMake regexes have no {n}
+  set(_sql2rdf_previous_pin "${SQL2RDF_GIT_TAG}")
+else()
+  set(_sql2rdf_previous_pin "")
+endif()
+if(NOT DEFINED SQL2RDF_GIT_TAG
+   OR "${SQL2RDF_GIT_TAG}" STREQUAL ""
+   OR "${SQL2RDF_GIT_TAG}" STREQUAL "${_sql2rdf_previous_pin}")
+  set(SQL2RDF_GIT_TAG
+      "${SQL2RDF_PINNED_TAG}"
+      CACHE STRING "Git tag, branch or commit of sql2rdf to build against (default: the pinned commit)" FORCE)
+endif()
+set(SQL2RDF_LAST_PINNED_TAG
+    "${SQL2RDF_PINNED_TAG}"
+    CACHE INTERNAL "The sql2rdf commit pinned when this build directory was last configured")
+if(NOT "${SQL2RDF_GIT_TAG}" STREQUAL "${SQL2RDF_PINNED_TAG}")
+  message(STATUS "sql2rdf: building ${SQL2RDF_GIT_TAG} (overrides the pinned ${SQL2RDF_PINNED_TAG})")
+endif()
 FetchContent_Declare(
   sql2rdf
   GIT_REPOSITORY ${SQL2RDF_GIT_REPOSITORY}
